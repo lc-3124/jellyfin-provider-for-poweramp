@@ -98,6 +98,7 @@ class TrackStream(
 	private val channel: FileChannel,
 	private val db: AppDatabase,
 	private val jellyfinClient: JellyfinClientManager,
+	private val onTrackCompleted: () -> Unit = {},
 	private val onCloseCallback: () -> Unit
 ) {
 	private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -150,6 +151,7 @@ class TrackStream(
 		
 		if (newState == ContentState.COMPLETE) {
 			Log.i(TAG, "[$id] Download complete (${bitset.cardinality()}/$totalChunks)")
+			onTrackCompleted()
 		}
 		
 		val updatedEntity = entity.copy(chunks = bitset, state = newState)
@@ -431,7 +433,15 @@ class TrackPlaybackManager(
 			}
 		}!!
 		
-		val stream = TrackStream(trackId, sharedState, channel, db, jellyfinClient) {
+		val stream = TrackStream(
+			trackId, sharedState, channel, db, jellyfinClient,
+			onTrackCompleted = {
+				scope.launch {
+					prefetchAlbumArt(trackId, jellyfinClient)
+					scheduleEviction()
+				}
+			}
+		) {
 			// Reader count is already decremented in TrackStream.close(); just drop
 			// the shared state once nobody is left.
 			activeTracks.computeIfPresent(trackId) { _, state ->
@@ -477,6 +487,140 @@ class TrackPlaybackManager(
 	/** 只读本地库，离线层次不用联网取歌词。 */
 	fun getCachedLyrics(trackId: UUID): TrackLyricsEntity? =
 		db.trackDao().getTrackLyricsById(trackId)
+
+	// ------------------------------------------------- cache maintenance --
+	
+	@Volatile
+	private var lastEvictionCheck = 0L
+	
+	/** 一首歌刚下完时触发一次限流后的淘汰检查（README 里“不会自动清理”的问题）。 */
+	private fun scheduleEviction() {
+		val now = System.currentTimeMillis()
+		if (now - lastEvictionCheck < 60_000) return
+		lastEvictionCheck = now
+		performEviction { }
+	}
+	
+	/** 缓存完一首就把专辑封面拉下来，保证离线库也有图。 */
+	private suspend fun prefetchAlbumArt(trackId: UUID, client: JellyfinClientManager) {
+		try {
+			val albumId = db.trackDao().getTrackById(trackId)?.albumId ?: return
+			if (getCachedThumbnail(albumId) != null) return
+			if (!client.isAuthenticated()) return
+			downloadThumbnail(albumId, client, null)
+		} catch (e: Exception) {
+			Log.w(TAG, "Album art prefetch failed for $trackId: ${e.message}")
+		}
+	}
+	
+	data class CompleteResult(val completed: Int, val failed: Int, val skipped: Int)
+	
+	/**
+	 * 把“只缓存了一半”的曲目补下完整。逐个补齐缺失的 chunk 区间，
+	 * 失败也会保存已拿到的进度，下次继续。
+	 */
+	suspend fun completePartialTracks(
+		client: JellyfinClientManager,
+		onProgress: suspend (done: Int, total: Int, title: String) -> Unit
+	): CompleteResult = withContext(Dispatchers.IO) {
+		val partialIds = db.trackDao().getTrackIdsByState(ContentState.PARTIAL)
+		var completed = 0
+		var failed = 0
+		var skipped = 0
+		
+		partialIds.forEachIndexed { index, trackId ->
+			val state = db.trackDao().getTrackStateById(trackId)
+			val metadata = db.trackDao().getTrackById(trackId)
+			val title = metadata?.title ?: trackId.toString()
+			onProgress(index, partialIds.size, title)
+			
+			if (state == null || metadata == null) {
+				skipped++
+				return@forEachIndexed
+			}
+			if (activeTracks.containsKey(trackId)) {
+				skipped++
+				return@forEachIndexed
+			}
+			val file = state.getFile(tracksDir)
+			if (!file.exists() || state.sizeBytes <= 0L) {
+				// 状态记录还在但文件没了：直接清掉脏数据
+				db.trackDao().deleteTrackStateById(trackId)
+				skipped++
+				return@forEachIndexed
+			}
+			
+			val albumId = metadata.albumId
+			when {
+				downloadMissingChunks(trackId, state, file, client) -> {
+					completed++
+					if (albumId != null && getCachedThumbnail(albumId) == null) {
+						try {
+							downloadThumbnail(albumId, client, null)
+						} catch (_: Exception) {
+						}
+					}
+				}
+				
+				else -> failed++
+			}
+		}
+		
+		onProgress(partialIds.size, partialIds.size, "")
+		if (completed > 0) scheduleEviction()
+		CompleteResult(completed, failed, skipped)
+	}
+	
+	private suspend fun downloadMissingChunks(
+		trackId: UUID,
+		state: TrackStateEntity,
+		file: File,
+		client: JellyfinClientManager
+	): Boolean {
+		val chunkSize = TrackStateEntity.CHUNK_SIZE
+		val totalChunks = (state.sizeBytes + chunkSize - 1) / chunkSize
+		var success = true
+		
+		FileChannel.open(file.toPath(), StandardOpenOption.READ, StandardOpenOption.WRITE)
+			.use { channel ->
+				var chunk = state.chunks.nextClearBit(0).toLong()
+				while (chunk < totalChunks) {
+					val nextFilled = state.chunks.nextSetBit(chunk.toInt())
+					val endExclusive = if (nextFilled == -1) totalChunks else nextFilled.toLong()
+					val startOffset = chunk * chunkSize
+					val endOffset = minOf(state.sizeBytes, endExclusive * chunkSize)
+					
+					val ok = client.downloadTrack(
+						trackId = trackId,
+						outputFile = channel,
+						byteOffset = startOffset,
+						byteLength = endOffset - startOffset
+					)
+					if (!ok) {
+						success = false
+						break
+					}
+					synchronized(state.chunks) {
+						state.chunks.set(chunk.toInt(), endExclusive.toInt())
+					}
+					chunk = state.chunks.nextClearBit(endExclusive.toInt()).toLong()
+				}
+			}
+		
+		// 不管成功与否都落盘已经拿到的块，下次可以续传
+		val fresh = db.trackDao().getTrackStateById(trackId) ?: return false
+		val merged = fresh.chunks
+		synchronized(state.chunks) { merged.or(state.chunks) }
+		val complete = merged.cardinality().toLong() >= totalChunks
+		db.trackDao().updateTrackState(
+			fresh.copy(
+				chunks = merged,
+				state = if (complete) ContentState.COMPLETE else ContentState.PARTIAL
+			)
+		)
+		if (complete) file.setLastModified(System.currentTimeMillis())
+		return success && complete
+	}
 	
 	fun getCachedThumbnail(albumId: UUID): File? =
 		File(thumbDir, "$albumId.jpg").takeIf { it.exists() }

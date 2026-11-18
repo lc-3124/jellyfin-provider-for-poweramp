@@ -88,6 +88,8 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 	var isAuthenticated by remember { mutableStateOf(manager.isAuthenticated()) }
 	var cacheBreakdown by remember { mutableStateOf<TrackPlaybackManager.CacheSizeBreakdown?>(null) }
 	var isEvicting by remember { mutableStateOf(false) }
+	var isCompleting by remember { mutableStateOf(false) }
+	var completeProgress by remember { mutableStateOf("") }
 	var isScanning by remember { mutableStateOf(false) }
 	var scanProgress by remember { mutableStateOf("") }
 	var libraryStats by remember { mutableStateOf<Pair<Int, Int>?>(null) }
@@ -505,6 +507,51 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 				Text("Evicting...")
 			} else {
 				Text("Evict Old Tracks")
+			}
+		}
+		
+		Spacer(modifier = Modifier.height(8.dp))
+		
+		// Complete partially downloaded tracks
+		Button(
+			onClick = {
+				isCompleting = true
+				completeProgress = "Preparing..."
+				scope.launch {
+					val result = playbackManager.completePartialTracks(manager) { done, total, title ->
+						withContext(Dispatchers.Main) {
+							completeProgress = if (total > 0) {
+								"Completing $done/$total${if (title.isNotBlank()) ": $title" else ""}"
+							} else ""
+						}
+					}
+					val breakdown = withContext(Dispatchers.IO) {
+						playbackManager.getCacheSizeBreakdown()
+					}
+					cacheBreakdown = breakdown
+					isCompleting = false
+					Toast.makeText(
+						context,
+						"Completed ${result.completed}, failed ${result.failed}, skipped ${result.skipped}",
+						Toast.LENGTH_LONG
+					).show()
+				}
+			},
+			modifier = Modifier.fillMaxWidth(),
+			enabled = !isCompleting && !isEvicting && isAuthenticated,
+			colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+		) {
+			if (isCompleting) {
+				CircularProgressIndicator(
+					modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onSecondary
+				)
+				Spacer(modifier = Modifier.width(8.dp))
+				Text(
+					completeProgress.ifBlank { "Completing partial downloads..." },
+					maxLines = 1
+				)
+			} else {
+				Text("Complete Partial Downloads")
 			}
 		}
 		

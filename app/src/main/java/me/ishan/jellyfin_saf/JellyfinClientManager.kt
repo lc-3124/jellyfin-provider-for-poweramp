@@ -71,6 +71,10 @@ class JellyfinClientManager(private val context: Context? = null) {
 	private var api: ApiClient? = null
 	private var currentUserId: UUID? = null
 	
+	/** 根目录会被播放器反复查询，短缓存避免每次都打服务器。 */
+	@Volatile
+	private var albumsCache: Pair<Long, List<BaseItemDto>>? = null
+	
 	// Credentials
 	private var serverUrl: String = ""
 	private var username: String = ""
@@ -216,6 +220,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 			// Save credentials
 			accessToken = token
 			currentUserId = userId
+			albumsCache = null
 			
 			persistCredentials()
 			
@@ -245,6 +250,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 		
 		accessToken = null
 		currentUserId = null
+		albumsCache = null
 		
 		prefs?.edit {
 			remove(KEY_ACCESS_TOKEN)
@@ -340,6 +346,15 @@ class JellyfinClientManager(private val context: Context? = null) {
 		val apiClient = getApiClient() ?: return@withContext emptyList()
 		val userId = currentUserId ?: return@withContext emptyList()
 		
+		val useCache = startIndex == null && limit != null
+		if (useCache) {
+			albumsCache?.let { (timestamp, cachedAlbums) ->
+				if (System.currentTimeMillis() - timestamp < ALBUMS_CACHE_TTL_MS) {
+					return@withContext cachedAlbums
+				}
+			}
+		}
+		
 		try {
 			val result = apiClient.itemsApi.getItems(
 				userId = userId,
@@ -350,7 +365,11 @@ class JellyfinClientManager(private val context: Context? = null) {
 				fields = setOf(ItemFields.GENRES)
 			)
 			
-			result.content.items
+			val items = result.content.items
+			if (useCache && items.isNotEmpty()) {
+				albumsCache = System.currentTimeMillis() to items
+			}
+			items
 		} catch (e: InvalidStatusException) {
 			Log.w(TAG, "getAlbums limit=$limit startIndex=$startIndex received ${e.status} code")
 			if (e.status == 401) {
@@ -509,9 +528,9 @@ class JellyfinClientManager(private val context: Context? = null) {
 		byteOffset: Long = 0L,
 		byteLength: Long? = null,
 		onProgress: ((Long) -> Unit)? = null,
-	): Unit = withContext(Dispatchers.IO) {
-		val url = getStreamUrl(trackId) ?: return@withContext
-		val token = accessToken ?: return@withContext
+	): Boolean = withContext(Dispatchers.IO) {
+		val url = getStreamUrl(trackId) ?: return@withContext false
+		val token = accessToken ?: return@withContext false
 		
 		try {
 			val requestBuilder = Request.Builder().url(url).header("X-Emby-Token", token)
@@ -537,7 +556,13 @@ class JellyfinClientManager(private val context: Context? = null) {
 						TAG,
 						"[$trackId] Download failed: HTTP ${response.code} (offset=$byteOffset) (channelSize=${outputFile.size()})"
 					)
-					return@withContext
+					return@withContext false
+				}
+				
+				// 服务器忽略了 Range，返回 200 全量内容：从中间写入会拼出坏文件
+				if (response.code == 200 && byteOffset > 0L) {
+					Log.e(TAG, "[$trackId] Server ignored Range at offset $byteOffset")
+					return@withContext false
 				}
 				
 				val body = response.body
@@ -563,7 +588,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 								TAG,
 								"[$trackId] Download interrupted. read $totalDownloaded starting from $byteOffset"
 							)
-							return@withContext
+							return@withContext false
 						}
 					}
 				}
@@ -577,11 +602,13 @@ class JellyfinClientManager(private val context: Context? = null) {
 			if (e.status == 401) {
 				accessToken = null
 			}
+			false
 		} catch (e: Exception) {
 			// log exception
 			if (e !is java.util.concurrent.CancellationException) {
 				Log.d(TAG, "[$trackId] Download interrupted: ${e.message}")
 			}
+			false
 		}
 	}
 	
@@ -851,5 +878,6 @@ class JellyfinClientManager(private val context: Context? = null) {
 		private const val KEY_USER_ID = "user_id"
 		private const val KEY_DEVICE_ID = "device_id"
 		private const val KEY_MAX_CACHE_SIZE = "max_cache_size"
+		private const val ALBUMS_CACHE_TTL_MS = 120_000L
 	}
 }

@@ -22,12 +22,18 @@ the cache root looks like a normal tagged music library to Poweramp.
 To use it: Poweramp → Settings → Libraries → Folders/Libraries → Add → pick
 "Jellyfin Cache".
 
+The settings screen also has a **Complete Partial Downloads** button: it walks every
+half-downloaded track and fetches only the missing byte ranges, so a track you
+skipped in the middle becomes fully available offline.
+
 # Known issues
 
 1. Playback pauses when the application and the audio player both are in background. This is due to Battery optimisations in Android. Set the SAF provider's
 battery optimisation level to "Unoptimised". The application does not use any wakelocks or background jobs and it is only active during playback.
 
-2. It does not prune tracks after breaching the specified limit. You need to do it manually using "Evict Old Tracks" option.
+2. Cache eviction now runs automatically after a track finishes downloading (throttled
+   to once a minute) and evicts least-recently-used tracks, never the ones currently
+   being played. "Evict Old Tracks" still exists for manual control.
 
 # Screenshots
 

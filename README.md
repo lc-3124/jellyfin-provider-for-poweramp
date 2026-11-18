@@ -1,5 +1,20 @@
 # Jellyfin SAF Provider
 
+> ### Unofficial fork — read this first
+>
+> This is a personal fork of
+> [ishanjain28/jellyfin-saf-provider](https://github.com/ishanjain28/jellyfin-saf-provider).
+> **The original author has not reviewed, authorised, or endorsed this fork.** All credit for the
+> original design and implementation belongs to them. Upstream ships no licence file, so this fork
+> claims no additional rights: it exists strictly for technical study and personal experimentation.
+>
+> It is **not** published anywhere except this GitHub repository — no Play Store, no mirrors, no
+> paid or bundled builds. Please do not redistribute it elsewhere or use it commercially.
+>
+> APKs are signed with the **default Android debug key**, not with a maintainer release key. They
+> are provided as-is, without warranty and without any security review. Check the SHA-256 yourself
+> and install at your own risk.
+
 Expose your [Jellyfin](https://jellyfin.org) music library over Android's **Storage Access
 Framework (SAF)**, so players that understand folders but not Jellyfin can still browse and
 play your server music. Built and tuned for [Poweramp](https://powerampapp.com/), but any SAF
@@ -69,6 +84,13 @@ Poweramp ── SAF (content://) ──> JellyfinMusicProvider (DocumentsProvide
 - **Fully cached tracks bypass the proxy** and return a plain `ParcelFileDescriptor`, so playback
   costs nothing extra.
 
+## Download
+
+Releases are published **only** in this repository's
+[releases page](https://github.com/lc-3124/jellyfin-saf-provider/releases). Each APK targets
+`arm64-v8a` and `x86_64`, is minified with R8 and signed with the Android debug key — see the
+disclaimer above. Release notes and the file hash are included with every release.
+
 ## Build
 
 Requirements: JDK 21, Android SDK platform `android-36.1` + build-tools `36.0.0` or newer.
@@ -137,6 +159,17 @@ Compared to upstream `v0.0.9`:
 - The album listing is cached for two minutes to reduce binder-thread stalls.
 
 ## 中文速览
+
+> **声明**：本仓库是 [ishanjain28/jellyfin-saf-provider](https://github.com/ishanjain28/jellyfin-saf-provider)
+> 的个人 fork。**原作者并未审阅、授权或背书本项目**，原始设计与实现的所有功劳归原作者；上游未附
+> 许可证文件，本 fork 不主张任何额外权利，仅用于技术学习与个人测试。
+>
+> 本项目**只在 GitHub 本仓库发布**，不上架任何应用商店，不在其他站点、网盘或任何付费渠道分发，
+> 也请勿用于商业用途。
+>
+> 发布的 APK 使用 **Android 默认 debug 证书**签名，并非维护者正式发布证书，未经任何安全审计。
+> 请自行核对 SHA-256，安装与使用风险自负。
+
 
 把 Jellyfin 音乐库通过 Android SAF 暴露成文件夹，给只认本地文件的播放器（主要针对 Poweramp）用。
 

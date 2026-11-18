@@ -47,7 +47,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: ${{ env.APK_PATH }}
-          generate_release_notes: true
+          # 发布说明必须包含原作者归属、非授权声明与签名/安全免责
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: false
           draft: false
           prerelease: false
         env:

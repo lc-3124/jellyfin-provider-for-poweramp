@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import androidx.room.Upsert
 import org.jellyfin.sdk.model.UUID
 import me.ishan.jellyfin_saf.ContentState
 
@@ -14,7 +15,12 @@ interface TrackDao {
     @Query("SELECT * FROM track_metadata WHERE id = :id")
     fun getTrackById(id: UUID): TrackEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    /**
+     * 必须是 UPSERT（UPDATE on conflict），不能用 INSERT OR REPLACE：
+     * REPLACE 会先 DELETE 父行，触发 track_state / track_lyrics 的
+     * ON DELETE CASCADE，把缓存位图整条删掉，只留下孤儿 .cache 文件。
+     */
+    @Upsert
     fun insertTrack(track: TrackEntity)
 
     @Update

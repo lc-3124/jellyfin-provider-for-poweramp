@@ -104,6 +104,8 @@ class JellyfinMusicProvider : DocumentsProvider() {
 			)
 			
 			playbackManager = TrackPlaybackManagerSingleton.getInstance(context = ctx)
+			// 后台认领没有索引的缓存文件（老版本级联删除留下的）
+			playbackManager.recoverCacheIndexAsync()
 			
 			// Initialize proxy thread pool
 			synchronized(proxyThreads) {
@@ -331,8 +333,12 @@ class JellyfinMusicProvider : DocumentsProvider() {
 							}.thenBy { it.first.title.orEmpty().lowercase() }
 						)
 						.forEach { (metadata, state) ->
+							val sizeBytes = state.sizeBytes.takeIf { it > 0L }
+								?: metadata.size ?: 0L
+							val durationMs = state.durationMs.takeIf { it > 0L }
+								?: metadata.duration ?: 0L
 							val docId = DocumentId.forCacheTrack(
-								parentId.albumId, metadata.id, state.sizeBytes, state.durationMs
+								parentId.albumId, metadata.id, sizeBytes, durationMs
 							)
 							addTrackRow(
 								result, cols, docId, metadata,

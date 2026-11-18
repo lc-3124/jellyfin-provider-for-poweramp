@@ -2,6 +2,7 @@ package me.ishan.jellyfin_saf
 
 import android.content.Context
 import android.graphics.Point
+import android.system.Os
 import android.util.Log
 import me.ishan.jellyfin_saf.db.TrackEntity
 import me.ishan.jellyfin_saf.db.TrackLyricsEntity
@@ -482,6 +483,66 @@ class TrackPlaybackManager(
 		val metadata = db.trackDao().getTrackById(trackId) ?: return null
 		val state = db.trackDao().getTrackStateById(trackId) ?: return null
 		return metadata to state
+	}
+	
+	/**
+	 * 修复历史脏数据：旧版本用 INSERT OR REPLACE 写元数据时会级联删掉
+	 * track_state，留下没有索引的 .cache 文件。这里按实际磁盘占用把它们认领回来：
+	 *  - 块占用覆盖整个文件 -> 视为 COMPLETE
+	 *  - 否则 -> 建一条空位图的 PARTIAL，让“Complete Partial Downloads”接手
+	 */
+	fun recoverCacheIndexAsync() {
+		scope.launch { recoverOrphanedCacheFiles() }
+	}
+	
+	private fun recoverOrphanedCacheFiles(): Int {
+		return try {
+			val known = db.trackDao().getAllTrackStates().map { it.id }.toSet()
+			var recovered = 0
+			tracksDir.listFiles()?.forEach { file ->
+				if (!file.isFile || !file.name.endsWith(".cache")) return@forEach
+				val id = try {
+					UUID.fromString(file.nameWithoutExtension)
+				} catch (e: Exception) {
+					null
+				} ?: return@forEach
+				
+				if (id in known) return@forEach
+				val size = file.length()
+				if (size <= 0L) {
+					file.delete()
+					return@forEach
+				}
+				// 元数据都没了就没法重建索引，交给用户重新扫描
+				if (db.trackDao().getTrackById(id) == null) return@forEach
+				
+				val allocatedBytes = try {
+					Os.stat(file.absolutePath).st_blocks * 512L
+				} catch (e: Exception) {
+					0L
+				}
+				val totalChunks =
+					((size + TrackStateEntity.CHUNK_SIZE - 1) / TrackStateEntity.CHUNK_SIZE).toInt()
+				val complete = allocatedBytes >= size * 98 / 100
+				val chunks = BitSet().apply { if (complete) set(0, totalChunks) }
+				
+				db.trackDao().insertTrackState(
+					TrackStateEntity(
+						id = id,
+						state = if (complete) ContentState.COMPLETE else ContentState.PARTIAL,
+						chunks = chunks,
+						sizeBytes = size,
+						durationMs = 0L
+					)
+				)
+				recovered++
+			}
+			if (recovered > 0) Log.i(TAG, "Recovered $recovered orphaned cache entries")
+			recovered
+		} catch (e: Exception) {
+			Log.e(TAG, "Cache index recovery failed", e)
+			0
+		}
 	}
 	
 	/** 只读本地库，离线层次不用联网取歌词。 */

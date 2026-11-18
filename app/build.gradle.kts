@@ -24,6 +24,11 @@ android {
 		versionCode = 10
 		
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+		
+		// 只保留 64 位 ARM 与 x86_64（模拟器 / Chromebook），去掉 32 位
+		ndk {
+			abiFilters += listOf("arm64-v8a", "x86_64")
+		}
 	}
 	
 	buildTypes {

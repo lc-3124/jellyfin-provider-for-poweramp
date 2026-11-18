@@ -11,6 +11,17 @@ it specifically to work the best with [Poweramp](https://powerampapp.com/).
 This is not published on Play Store yet. You can grab the latest APK from [releases section](https://github.com/ishanjain28/jellyfin-saf-provider/releases).
 
 
+# Offline cache root (this fork)
+
+In addition to the streaming root ("Jellyfin Music"), the provider exposes a second
+root called **Jellyfin Cache**. It only lists tracks that are fully downloaded and
+serves them straight from disk, so it keeps working with no network and no login.
+Track tags, album art, lyrics and favourite flags come from the local database, so
+the cache root looks like a normal tagged music library to Poweramp.
+
+To use it: Poweramp → Settings → Libraries → Folders/Libraries → Add → pick
+"Jellyfin Cache".
+
 # Known issues
 
 1. Playback pauses when the application and the audio player both are in background. This is due to Battery optimisations in Android. Set the SAF provider's

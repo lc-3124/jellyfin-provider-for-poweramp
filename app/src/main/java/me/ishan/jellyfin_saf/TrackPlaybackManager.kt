@@ -3,6 +3,8 @@ package me.ishan.jellyfin_saf
 import android.content.Context
 import android.graphics.Point
 import android.util.Log
+import me.ishan.jellyfin_saf.db.TrackEntity
+import me.ishan.jellyfin_saf.db.TrackLyricsEntity
 import me.ishan.jellyfin_saf.db.TrackStateEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +33,19 @@ class SharedTrackState(val entry: TrackStateEntity) {
 	
 	@Volatile
 	var activeReaders: Int = 0
+		private set
+	
+	@Synchronized
+	fun addReader() {
+		activeReaders += 1
+	}
+	
+	/** @return how many readers are still alive after this one goes away. */
+	@Synchronized
+	fun releaseReader(): Int {
+		if (activeReaders > 0) activeReaders -= 1
+		return activeReaders
+	}
 	
 	fun nextClearBitDisk(chunk: Int): Int = synchronized(entry.chunks) {
 		entry.chunks.nextClearBit(chunk)
@@ -152,7 +167,8 @@ class TrackStream(
 		activeDownload?.job?.cancel()
 		
 		// 3. Save state in the background without blocking this thread
-		if (sharedState.activeReaders == 1) {
+		val remainingReaders = sharedState.releaseReader()
+		if (remainingReaders == 0) {
 			try {
 				updateState(trackId, entry.chunks)
 			} catch (e: Exception) {
@@ -338,23 +354,32 @@ class TrackPlaybackManager(
 			var evictedCount = 0
 			try {
 				val limitBytes = maxCacheSizeMB * 1024 * 1024
-				val breakdown = getCacheSizeBreakdown()
-				var currentSize = breakdown.totalSize
-				if (currentSize <= limitBytes) {
-					onComplete(0)
-					return@launch
-				}
-				val oldestTracks = db.trackDao().getOldestAccessedTrackStatesExcludingFav()
-				for (record in oldestTracks) {
-					val file = record.getFile(tracksDir)
-					val fileSize =
-						if (record.state == ContentState.COMPLETE) file.length() else record.chunks.cardinality() * TrackStateEntity.CHUNK_SIZE
+				var currentSize = getCacheSizeBreakdown().totalSize
+				if (currentSize <= limitBytes) return@launch
+				
+				// 按缓存文件的最后访问时间排序（打开文件时会 touch mtime），跳过正在播放的曲目。
+				// 原来的 SQL 名为 "oldest" 却没有 ORDER BY，实际是按 rowid 随机顺序删。
+				val candidates = db.trackDao().getOldestAccessedTrackStatesExcludingFav()
+					.filter { !activeTracks.containsKey(it.id) }
+					.map { it to it.getFile(tracksDir) }
+					.sortedBy { it.second.lastModified() }
+				
+				for ((record, file) in candidates) {
+					if (currentSize <= limitBytes * 9 / 10) break
+					val fileSize = if (record.state == ContentState.COMPLETE) {
+						file.length()
+					} else {
+						minOf(
+							record.sizeBytes,
+							record.chunks.cardinality() * TrackStateEntity.CHUNK_SIZE
+						)
+					}
 					if (file.exists() && file.delete()) {
 						evictedCount++
 						currentSize -= fileSize
 					}
-					db.trackDao().deleteTrackById(record.id)
-					if (currentSize <= limitBytes * 0.9) break
+					// 只删缓存状态，保留元数据：离线索引和标签还在，下次播放会重新建状态。
+					db.trackDao().deleteTrackStateById(record.id)
 				}
 			} catch (e: Exception) {
 				Log.e(TAG, "Cache eviction failed", e)
@@ -367,8 +392,9 @@ class TrackPlaybackManager(
 	fun openTrackForStreaming(
 		trackId: UUID, sizeBytes: Long, durationMs: Long, jellyfinClient: JellyfinClientManager
 	): TrackStream {
+		val cacheFile = File(tracksDir, "$trackId.cache")
 		val channel = FileChannel.open(
-			File(tracksDir, "$trackId.cache").toPath(),
+			cacheFile.toPath(),
 			StandardOpenOption.READ,
 			StandardOpenOption.WRITE,
 			StandardOpenOption.CREATE,
@@ -378,10 +404,12 @@ class TrackPlaybackManager(
 				val buffer = ByteBuffer.wrap(byteArrayOf(0))
 				channel.write(buffer, sizeBytes - 1)
 			}
+			// 记录访问时间，供缓存淘汰使用
+			cacheFile.setLastModified(System.currentTimeMillis())
 		}
 		val sharedState = activeTracks.compute(trackId) { _, existingState ->
 			if (existingState != null) {
-				existingState.activeReaders += 1
+				existingState.addReader()
 				existingState
 			} else {
 				var entry = db.trackDao().getTrackStateById(trackId)
@@ -399,13 +427,14 @@ class TrackPlaybackManager(
 					)
 					db.trackDao().insertTrackState(entry)
 				}
-				SharedTrackState(entry).apply { activeReaders = 1 }
+				SharedTrackState(entry).apply { addReader() }
 			}
 		}!!
 		
 		val stream = TrackStream(trackId, sharedState, channel, db, jellyfinClient) {
+			// Reader count is already decremented in TrackStream.close(); just drop
+			// the shared state once nobody is left.
 			activeTracks.computeIfPresent(trackId) { _, state ->
-				state.activeReaders -= 1
 				if (state.activeReaders <= 0) null else state
 			}
 		}
@@ -422,8 +451,32 @@ class TrackPlaybackManager(
 		if (!path.exists()) {
 			return null
 		}
-		return path.toFile()
+		return path.toFile().apply {
+			// LRU 依据：真正播放过才算“访问”
+			setLastModified(System.currentTimeMillis())
+		}
 	}
+	
+	/**
+	 * 离线索引：所有有缓存状态的曲目，附带元数据。
+	 * 只读两遍数据库（全部元数据 + 全部状态），在内存里 join。
+	 */
+	fun getCachedEntries(): List<Pair<TrackEntity, TrackStateEntity>> {
+		val metadata = db.trackDao().getAllTracks().associateBy { it.id }
+		return db.trackDao().getAllTrackStates().mapNotNull { state ->
+			metadata[state.id]?.let { it to state }
+		}
+	}
+	
+	fun getCachedEntry(trackId: UUID): Pair<TrackEntity, TrackStateEntity>? {
+		val metadata = db.trackDao().getTrackById(trackId) ?: return null
+		val state = db.trackDao().getTrackStateById(trackId) ?: return null
+		return metadata to state
+	}
+	
+	/** 只读本地库，离线层次不用联网取歌词。 */
+	fun getCachedLyrics(trackId: UUID): TrackLyricsEntity? =
+		db.trackDao().getTrackLyricsById(trackId)
 	
 	fun getCachedThumbnail(albumId: UUID): File? =
 		File(thumbDir, "$albumId.jpg").takeIf { it.exists() }
@@ -545,7 +598,7 @@ object TrackPlaybackManagerSingleton {
 			).apply { mkdirs() },
 				File(appContext.cacheDir, "jellyfin_thumbs").apply { mkdirs() },
 				AppDatabase.getDatabase(appContext),
-				appContext.getDatabasePath("jellyfin_media_cache.db"),
+				appContext.getDatabasePath(AppDatabase.DB_NAME),
 				client.getMaxCacheSize()
 			).also { INSTANCE = it }
 		}

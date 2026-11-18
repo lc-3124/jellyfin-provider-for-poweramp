@@ -16,6 +16,8 @@ abstract class AppDatabase : RoomDatabase() {
 	abstract fun trackDao(): TrackDao
 	
 	companion object {
+		const val DB_NAME = "jellyfin_media_cache_room.db"
+		
 		@Volatile
 		private var INSTANCE: AppDatabase? = null
 		
@@ -24,7 +26,7 @@ abstract class AppDatabase : RoomDatabase() {
 				val instance = Room.databaseBuilder(
 					context.applicationContext,
 					AppDatabase::class.java,
-					"jellyfin_media_cache_room.db"
+					DB_NAME
 				).fallbackToDestructiveMigration(true).build()
 				INSTANCE = instance
 				instance

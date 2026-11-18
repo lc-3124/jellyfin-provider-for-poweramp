@@ -233,6 +233,12 @@ class JellyfinClientManager(private val context: Context? = null) {
 	/**
 	 * Logout and clear credentials
 	 */
+	/** 只清空密码，保留服务器地址和用户名方便重新登录。 */
+	fun clearStoredPassword() {
+		password = ""
+		prefs?.edit { remove(KEY_PASSWORD) }
+	}
+	
 	suspend fun logout() {
 		// invalidate the access token on remote server
 		getApiClient()?.sessionApi?.reportSessionEnded()

@@ -203,8 +203,13 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 			
 			Button(
 				onClick = {
-					scope.launch { manager.logout() }
-					isAuthenticated = false
+					scope.launch {
+						manager.logout()
+						// 不在 SharedPreferences 里留明文密码
+						manager.clearStoredPassword()
+						password = ""
+						isAuthenticated = false
+					}
 				}, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(
 					containerColor = MaterialTheme.colorScheme.error
 				)
@@ -442,6 +447,14 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 			text = "Calculating cache size...",
 			style = MaterialTheme.typography.bodyMedium,
 			color = MaterialTheme.colorScheme.onSurfaceVariant
+		)
+		
+		Spacer(modifier = Modifier.height(4.dp))
+		Text(
+			text = "Poweramp: Libraries → add folder → “Jellyfin Cache” plays downloaded songs offline.",
+			style = MaterialTheme.typography.bodySmall,
+			color = MaterialTheme.colorScheme.onSurfaceVariant,
+			modifier = Modifier.align(Alignment.Start)
 		)
 		
 		Spacer(modifier = Modifier.height(8.dp))

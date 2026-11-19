@@ -236,6 +236,30 @@ class JellyfinClientManager(private val context: Context? = null) {
 	}
 	
 	/**
+	 * 把收藏状态写到 Jellyfin 并更新本地库。
+	 */
+	suspend fun setFavourite(trackId: UUID, favourite: Boolean): Boolean =
+		withContext(Dispatchers.IO) {
+			val apiClient = getApiClient() ?: return@withContext false
+			val userId = currentUserId ?: return@withContext false
+			try {
+				if (favourite) {
+					apiClient.userLibraryApi.markFavoriteItem(userId, trackId)
+				} else {
+					apiClient.userLibraryApi.unmarkFavoriteItem(userId, trackId)
+				}
+				db?.trackDao()?.getTrackById(trackId)?.let { track ->
+					db.trackDao().insertTrack(track.copy(isFavourite = favourite))
+				}
+				Log.d(TAG, "Favourite=$favourite for $trackId")
+				true
+			} catch (e: Exception) {
+				Log.e(TAG, "Failed to set favourite=$favourite for $trackId", e)
+				false
+			}
+		}
+	
+	/**
 	 * Logout and clear credentials
 	 */
 	/** 只清空密码，保留服务器地址和用户名方便重新登录。 */

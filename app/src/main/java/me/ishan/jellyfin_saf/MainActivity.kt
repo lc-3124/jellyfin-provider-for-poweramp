@@ -92,6 +92,8 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 	var isEvicting by remember { mutableStateOf(false) }
 	var isCompleting by remember { mutableStateOf(false) }
 	var completeProgress by remember { mutableStateOf("") }
+	var isSyncing by remember { mutableStateOf(false) }
+	var syncProgress by remember { mutableStateOf("") }
 	var showDeleteMenu by remember { mutableStateOf(false) }
 	var showResetConfirm by remember { mutableStateOf(false) }
 	var isScanning by remember { mutableStateOf(false) }
@@ -499,7 +501,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 				}
 			},
 			modifier = Modifier.fillMaxWidth(),
-			enabled = !isCompleting && !isEvicting && isAuthenticated,
+			enabled = !isCompleting && !isEvicting && !isSyncing && isAuthenticated,
 			colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
 		) {
 			if (isCompleting) {
@@ -518,11 +520,73 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		
 		Spacer(modifier = Modifier.height(8.dp))
 		
+		// Poweramp 点赞 -> Jellyfin 收藏，然后主动把这些收藏下完整
+		Button(
+			onClick = {
+				isSyncing = true
+				syncProgress = "Reading Poweramp..."
+				scope.launch {
+					val result = PowerampSync.sync(context, manager)
+					if (result.needsPermission) {
+						isSyncing = false
+						Toast.makeText(
+							context,
+							"Grant Poweramp data access, then tap Sync again",
+							Toast.LENGTH_LONG
+						).show()
+						return@launch
+					}
+					if (result.error != null) {
+						isSyncing = false
+						Toast.makeText(
+							context, "Sync failed: ${result.error}", Toast.LENGTH_LONG
+						).show()
+						return@launch
+					}
+					syncProgress =
+						"Synced ${result.liked + result.unliked} likes, downloading favourites..."
+					val dl = playbackManager.downloadFavouriteTracks(manager) { done, total, title ->
+						withContext(Dispatchers.Main) {
+							syncProgress = "Downloading $done/$total${
+								if (title.isNotBlank()) ": $title" else ""
+							}"
+						}
+					}
+					val breakdown = withContext(Dispatchers.IO) {
+						playbackManager.getCacheSizeBreakdown()
+					}
+					cacheBreakdown = breakdown
+					isSyncing = false
+					Toast.makeText(
+						context,
+						"Likes: ${result.liked} added, ${result.unliked} removed. " +
+							"Downloads: ${dl.downloaded} new, ${dl.skipped} cached, ${dl.failed} failed",
+						Toast.LENGTH_LONG
+					).show()
+				}
+			},
+			modifier = Modifier.fillMaxWidth(),
+			enabled = !isSyncing && !isCompleting && !isEvicting && isAuthenticated,
+			colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+		) {
+			if (isSyncing) {
+				CircularProgressIndicator(
+					modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onPrimary
+				)
+				Spacer(modifier = Modifier.width(8.dp))
+				Text(syncProgress.ifBlank { "Syncing..." }, maxLines = 1)
+			} else {
+				Text("Sync Poweramp Likes")
+			}
+		}
+		
+		Spacer(modifier = Modifier.height(8.dp))
+		
 		// 所有破坏性操作统一收进这个入口，避免误触
 		Button(
 			onClick = { showDeleteMenu = true },
 			modifier = Modifier.fillMaxWidth(),
-			enabled = !isEvicting && !isCompleting,
+			enabled = !isEvicting && !isCompleting && !isSyncing,
 			colors = ButtonDefaults.buttonColors(
 				containerColor = MaterialTheme.colorScheme.errorContainer,
 				contentColor = MaterialTheme.colorScheme.onErrorContainer

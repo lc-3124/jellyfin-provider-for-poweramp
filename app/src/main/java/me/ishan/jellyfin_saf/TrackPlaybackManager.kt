@@ -683,6 +683,106 @@ class TrackPlaybackManager(
 		return success && complete
 	}
 	
+	data class FavouriteDownloadResult(
+		val downloaded: Int, val skipped: Int, val failed: Int
+	)
+	
+	/**
+	 * 把收藏的曲目主动下载完整（不再指望用户从头听到尾）。
+	 */
+	suspend fun downloadFavouriteTracks(
+		client: JellyfinClientManager,
+		onProgress: suspend (done: Int, total: Int, title: String) -> Unit
+	): FavouriteDownloadResult = withContext(Dispatchers.IO) {
+		val ids = db.trackDao().getFavouriteTrackIds()
+		var downloaded = 0
+		var skipped = 0
+		var failed = 0
+		
+		ids.forEachIndexed { index, trackId ->
+			val metadata = db.trackDao().getTrackById(trackId)
+			val title = metadata?.title ?: trackId.toString()
+			onProgress(index, ids.size, title)
+			
+			if (metadata == null) {
+				skipped++
+				return@forEachIndexed
+			}
+			val state = db.trackDao().getTrackStateById(trackId)
+			val file = File(tracksDir, "$trackId.cache")
+			if (state?.state == ContentState.COMPLETE && file.exists() &&
+				file.length() == state.sizeBytes
+			) {
+				skipped++
+				return@forEachIndexed
+			}
+			if (activeTracks.containsKey(trackId)) {
+				skipped++
+				return@forEachIndexed
+			}
+			
+			val size = metadata.size?.takeIf { it > 0L } ?: state?.sizeBytes ?: 0L
+			val duration = metadata.duration ?: state?.durationMs ?: 0L
+			if (size <= 0L) {
+				failed++
+				return@forEachIndexed
+			}
+			
+			val ok = try {
+				FileChannel.open(
+					file.toPath(),
+					StandardOpenOption.READ,
+					StandardOpenOption.WRITE,
+					StandardOpenOption.CREATE,
+					StandardOpenOption.SPARSE
+				).use { channel ->
+					val marker = ByteBuffer.wrap(byteArrayOf(0))
+					channel.write(marker, size - 1)
+					client.downloadTrack(
+						trackId = trackId,
+						outputFile = channel,
+						byteOffset = 0L,
+						byteLength = size
+					)
+				}
+			} catch (e: Exception) {
+				Log.w(TAG, "[$trackId] Favourite download failed: ${e.message}")
+				false
+			}
+			
+			if (ok) {
+				val totalChunks =
+					((size + TrackStateEntity.CHUNK_SIZE - 1) / TrackStateEntity.CHUNK_SIZE).toInt()
+				val chunks = BitSet().apply { set(0, totalChunks) }
+				db.trackDao().insertTrackState(
+					TrackStateEntity(
+						id = trackId,
+						state = ContentState.COMPLETE,
+						chunks = chunks,
+						sizeBytes = size,
+						durationMs = duration
+					)
+				)
+				file.setLastModified(System.currentTimeMillis())
+				metadata.albumId?.let { albumId ->
+					if (getCachedThumbnail(albumId) == null) {
+						try {
+							downloadThumbnail(albumId, client, null)
+						} catch (_: Exception) {
+						}
+					}
+				}
+				downloaded++
+			} else {
+				failed++
+			}
+		}
+		
+		onProgress(ids.size, ids.size, "")
+		if (downloaded > 0) scheduleEviction()
+		FavouriteDownloadResult(downloaded, skipped, failed)
+	}
+	
 	fun getCachedThumbnail(albumId: UUID): File? =
 		File(thumbDir, "$albumId.jpg").takeIf { it.exists() }
 	

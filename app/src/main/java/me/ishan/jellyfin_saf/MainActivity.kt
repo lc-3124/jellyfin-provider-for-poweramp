@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -31,6 +32,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -90,6 +92,8 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 	var isEvicting by remember { mutableStateOf(false) }
 	var isCompleting by remember { mutableStateOf(false) }
 	var completeProgress by remember { mutableStateOf("") }
+	var showDeleteMenu by remember { mutableStateOf(false) }
+	var showResetConfirm by remember { mutableStateOf(false) }
 	var isScanning by remember { mutableStateOf(false) }
 	var scanProgress by remember { mutableStateOf("") }
 	var libraryStats by remember { mutableStateOf<Pair<Int, Int>?>(null) }
@@ -452,16 +456,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		)
 		
 		Spacer(modifier = Modifier.height(4.dp))
-		Text(
-			text = "Poweramp: Libraries → add folder → “Jellyfin Cache” plays downloaded songs offline.",
-			style = MaterialTheme.typography.bodySmall,
-			color = MaterialTheme.colorScheme.onSurfaceVariant,
-			modifier = Modifier.align(Alignment.Start)
-		)
 		
-		Spacer(modifier = Modifier.height(8.dp))
-		
-		// Refresh cache stats button
 		OutlinedButton(
 			onClick = {
 				scope.launch(Dispatchers.IO) {
@@ -474,40 +469,6 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 			}, modifier = Modifier.fillMaxWidth()
 		) {
 			Text("Refresh Cache Stats")
-		}
-		
-		Spacer(modifier = Modifier.height(8.dp))
-		
-		// Eviction button
-		Button(
-			onClick = {
-				isEvicting = true
-				playbackManager.performEviction { count ->
-					isEvicting = false
-					// Refresh breakdown
-					scope.launch(Dispatchers.IO) {
-						val breakdown = playbackManager.getCacheSizeBreakdown()
-						withContext(Dispatchers.Main) {
-							cacheBreakdown = breakdown
-							Toast.makeText(context, "Evicted $count tracks", Toast.LENGTH_SHORT)
-								.show()
-						}
-					}
-				}
-			},
-			modifier = Modifier.fillMaxWidth(),
-			enabled = !isEvicting,
-			colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-		) {
-			if (isEvicting) {
-				CircularProgressIndicator(
-					modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onSecondary
-				)
-				Spacer(modifier = Modifier.width(8.dp))
-				Text("Evicting...")
-			} else {
-				Text("Evict Old Tracks")
-			}
 		}
 		
 		Spacer(modifier = Modifier.height(8.dp))
@@ -555,91 +516,191 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 			}
 		}
 		
-		Spacer(modifier = Modifier.height(16.dp))
-		
-		// Cache management buttons
-		Button(
-			onClick = {
-				scope.launch(Dispatchers.IO) {
-					playbackManager.deletePartialFiles(excludeFavourites = true)
-					val breakdown = playbackManager.getCacheSizeBreakdown()
-					withContext(Dispatchers.Main) {
-						cacheBreakdown = breakdown
-						Toast.makeText(
-							context, "Partial files deleted (favourites kept)", Toast.LENGTH_SHORT
-						).show()
-					}
-				}
-			},
-			modifier = Modifier.fillMaxWidth(),
-			colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
-		) {
-			Text("Remove Partial Files")
-		}
-		
 		Spacer(modifier = Modifier.height(8.dp))
 		
+		// 所有破坏性操作统一收进这个入口，避免误触
 		Button(
-			onClick = {
-				scope.launch(Dispatchers.IO) {
-					playbackManager.deleteAllTracks(excludeFavourites = true)
-					val breakdown = playbackManager.getCacheSizeBreakdown()
-					withContext(Dispatchers.Main) {
-						cacheBreakdown = breakdown
-						Toast.makeText(
-							context, "All tracks deleted (favourites kept)", Toast.LENGTH_SHORT
-						).show()
-					}
-				}
-			},
+			onClick = { showDeleteMenu = true },
 			modifier = Modifier.fillMaxWidth(),
-			colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+			enabled = !isEvicting && !isCompleting,
+			colors = ButtonDefaults.buttonColors(
+				containerColor = MaterialTheme.colorScheme.errorContainer,
+				contentColor = MaterialTheme.colorScheme.onErrorContainer
+			)
 		) {
-			Text("Remove All Downloaded Tracks")
+			if (isEvicting) {
+				CircularProgressIndicator(
+					modifier = Modifier.size(24.dp),
+					color = MaterialTheme.colorScheme.onErrorContainer
+				)
+				Spacer(modifier = Modifier.width(8.dp))
+				Text("Trimming cache...")
+			} else {
+				Text("Delete")
+			}
 		}
-		
-		Spacer(modifier = Modifier.height(8.dp))
-		
-		Button(
-			onClick = {
-				scope.launch(Dispatchers.IO) {
-					playbackManager.deleteFavouriteTracks()
-					val breakdown = playbackManager.getCacheSizeBreakdown()
-					withContext(Dispatchers.Main) {
-						cacheBreakdown = breakdown
-						Toast.makeText(context, "Favourite tracks deleted", Toast.LENGTH_SHORT)
-							.show()
-					}
+	}
+	
+	if (showDeleteMenu) {
+		AlertDialog(
+			onDismissRequest = { showDeleteMenu = false },
+			title = { Text("Delete") },
+			text = {
+				Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+					DeleteOption(
+						title = "Trim to cache limit",
+						subtitle = "Evict least-recently-used tracks",
+						onClick = {
+							showDeleteMenu = false
+							isEvicting = true
+							playbackManager.performEviction { count ->
+								isEvicting = false
+								scope.launch(Dispatchers.IO) {
+									val breakdown = playbackManager.getCacheSizeBreakdown()
+									withContext(Dispatchers.Main) {
+										cacheBreakdown = breakdown
+										Toast.makeText(
+											context, "Evicted $count tracks", Toast.LENGTH_SHORT
+										).show()
+									}
+								}
+							}
+						}
+					)
+					DeleteOption(
+						title = "Unfinished downloads",
+						subtitle = "Partial files, favourites kept",
+						onClick = {
+							showDeleteMenu = false
+							scope.launch(Dispatchers.IO) {
+								playbackManager.deletePartialFiles(excludeFavourites = true)
+								val breakdown = playbackManager.getCacheSizeBreakdown()
+								withContext(Dispatchers.Main) {
+									cacheBreakdown = breakdown
+									Toast.makeText(
+										context,
+										"Unfinished downloads removed (favourites kept)",
+										Toast.LENGTH_SHORT
+									).show()
+								}
+							}
+						}
+					)
+					DeleteOption(
+						title = "All downloaded tracks",
+						subtitle = "Favourites kept",
+						danger = true,
+						onClick = {
+							showDeleteMenu = false
+							scope.launch(Dispatchers.IO) {
+								playbackManager.deleteAllTracks(excludeFavourites = true)
+								val breakdown = playbackManager.getCacheSizeBreakdown()
+								withContext(Dispatchers.Main) {
+									cacheBreakdown = breakdown
+									Toast.makeText(
+										context, "All tracks deleted (favourites kept)",
+										Toast.LENGTH_SHORT
+									).show()
+								}
+							}
+						}
+					)
+					DeleteOption(
+						title = "Favourite tracks",
+						subtitle = "Downloaded favourites only",
+						danger = true,
+						onClick = {
+							showDeleteMenu = false
+							scope.launch(Dispatchers.IO) {
+								playbackManager.deleteFavouriteTracks()
+								val breakdown = playbackManager.getCacheSizeBreakdown()
+								withContext(Dispatchers.Main) {
+									cacheBreakdown = breakdown
+									Toast.makeText(
+										context, "Favourite tracks deleted", Toast.LENGTH_SHORT
+									).show()
+								}
+							}
+						}
+					)
+					DeleteOption(
+						title = "Reset everything",
+						subtitle = "Metadata, cache state, audio and artwork",
+						danger = true,
+						onClick = {
+							showDeleteMenu = false
+							showResetConfirm = true
+						}
+					)
 				}
 			},
-			modifier = Modifier.fillMaxWidth(),
-			colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-		) {
-			Text("Remove Favourite Tracks")
-		}
-		
-		Spacer(modifier = Modifier.height(16.dp))
-		
-		Button(
-			onClick = {
-				scope.launch(Dispatchers.IO) {
-					val db = AppDatabase.getDatabase(context)
-					playbackManager.deleteAllTracks(excludeFavourites = false)
-					playbackManager.deleteAllAlbumArts()
-					db.clearAllTables()
-					val breakdown = playbackManager.getCacheSizeBreakdown()
-					withContext(Dispatchers.Main) {
-						cacheBreakdown = breakdown
-						Toast.makeText(
-							context, "Database Reset & Cache Cleared", Toast.LENGTH_SHORT
-						).show()
+			confirmButton = {
+				TextButton(onClick = { showDeleteMenu = false }) { Text("Cancel") }
+			}
+		)
+	}
+	
+	if (showResetConfirm) {
+		AlertDialog(
+			onDismissRequest = { showResetConfirm = false },
+			title = { Text("Reset everything?") },
+			text = {
+				Text("This deletes all metadata, cache state, downloaded audio and artwork. It cannot be undone.")
+			},
+			confirmButton = {
+				TextButton(
+					onClick = {
+						showResetConfirm = false
+						scope.launch(Dispatchers.IO) {
+							val db = AppDatabase.getDatabase(context)
+							playbackManager.deleteAllTracks(excludeFavourites = false)
+							playbackManager.deleteAllAlbumArts()
+							db.clearAllTables()
+							val breakdown = playbackManager.getCacheSizeBreakdown()
+							withContext(Dispatchers.Main) {
+								cacheBreakdown = breakdown
+								Toast.makeText(
+									context, "Database reset & cache cleared", Toast.LENGTH_SHORT
+								).show()
+							}
+						}
 					}
+				) {
+					Text("Reset", color = MaterialTheme.colorScheme.error)
 				}
 			},
+			dismissButton = {
+				TextButton(onClick = { showResetConfirm = false }) { Text("Cancel") }
+			}
+		)
+	}
+}
+
+@Composable
+private fun DeleteOption(
+	title: String, subtitle: String? = null, danger: Boolean = false, onClick: () -> Unit
+) {
+	OutlinedButton(
+		onClick = onClick,
+		modifier = Modifier
+			.fillMaxWidth()
+			.padding(vertical = 2.dp),
+		colors = if (danger) ButtonDefaults.outlinedButtonColors(
+			contentColor = MaterialTheme.colorScheme.error
+		) else ButtonDefaults.outlinedButtonColors()
+	) {
+		Column(
 			modifier = Modifier.fillMaxWidth(),
-			colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+			horizontalAlignment = Alignment.Start
 		) {
-			Text("Reset Database & Clear All Cache")
+			Text(title, style = MaterialTheme.typography.bodyLarge)
+			subtitle?.let {
+				Text(
+					it,
+					style = MaterialTheme.typography.bodySmall,
+					color = MaterialTheme.colorScheme.onSurfaceVariant
+				)
+			}
 		}
 	}
 }

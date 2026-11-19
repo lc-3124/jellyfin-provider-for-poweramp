@@ -1,124 +1,126 @@
 package me.ishan.jellyfin_saf
 
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.jellyfin.sdk.model.UUID
-import java.net.URLDecoder
+import org.json.JSONArray
+import java.io.File
 
 /**
- * Poweramp 的点赞 → Jellyfin 收藏。
+ * 两个方向的同步，语义由用户定义：
  *
- * Poweramp 通过 content provider 暴露自己的曲库：
- *   content://com.maxmpz.audioplayer.data/files
- * 列里有 rating（0..5）和 file_path。file_path 是 SAF 路径，例如：
- *   @jellyfin.music/jellyfin_cache_root/ctrk%3B<album>%3B<track>%3B<size>%3B<dur>
- * URL 解码后正好是我们的文档 id，所以能精确反解出 Jellyfin 的 track UUID。
+ * A. pushServerFavourites —— 只在扫描库后跑：
+ *    把 Jellyfin 远端收藏逐首写进 Poweramp（rating=5，已有 1-5 不动）。
+ *    只增不减，不下载。
  *
- * rating: 0 未评分, 1 unlike, 5 like, 2..4 为星级
- * 映射: >=4 → 收藏；==1 → 取消收藏；其余跳过（尤其 0 不能当成“取消”，否则会清掉
- * Jellyfin 里已有的收藏）。
+ * B. mirrorToJellyfin —— 只在用户手动同步时跑：
+ *    Poweramp 里 rating 1-5 的曲目全部设为 Jellyfin 收藏；
+ *    Jellyfin 已收藏但 Poweramp 未喜欢（且 Poweramp 认识这首歌）的 → 取消收藏。
+ *    然后由调用方下载收藏。
  */
 object PowerampSync {
 	private const val TAG = "PowerampSync"
-	private const val AUTHORITY = "com.maxmpz.audioplayer.data"
-	private const val POWERAMP_PACKAGE = "com.maxmpz.audioplayer"
-	private const val API_RECEIVER = "com.maxmpz.audioplayer.player.PowerampAPIReceiver"
-	private const val ACTION_ASK_FOR_DATA_PERMISSION =
-		"com.maxmpz.audioplayer.ACTION_ASK_FOR_DATA_PERMISSION"
+	private const val PUSHED_FILE = "poweramp_pushed.json"
 	
-	data class Result(
-		val liked: Int = 0,
-		val unliked: Int = 0,
-		val skipped: Int = 0,
-		val failed: Int = 0,
+	data class MirrorResult(
+		val added: Int = 0,
+		val removed: Int = 0,
 		val needsPermission: Boolean = false,
 		val error: String? = null
 	) {
-		val total: Int get() = liked + unliked
+		val total: Int get() = added + removed
 	}
 	
-	suspend fun sync(context: Context, client: JellyfinClientManager): Result =
-		withContext(Dispatchers.IO) {
-			val uri = Uri.parse("content://$AUTHORITY/files")
-			val cursor = try {
-				context.contentResolver.query(
-					uri, arrayOf("rating", "file_path"), "rating>0", null, null
-				)
-			} catch (e: SecurityException) {
-				Log.w(TAG, "No access to Poweramp provider, asking for it")
-				requestDataAccess(context)
-				return@withContext Result(needsPermission = true)
-			} catch (e: Exception) {
-				Log.e(TAG, "Query failed", e)
-				return@withContext Result(error = e.message ?: "query failed")
-			} ?: return@withContext Result(error = "Poweramp provider returned no cursor")
-			
-			var liked = 0
-			var unliked = 0
-			var skipped = 0
-			var failed = 0
-			
-			cursor.use { c ->
-				val ratingIdx = c.getColumnIndex("rating")
-				val pathIdx = c.getColumnIndex("file_path")
-				while (c.moveToNext()) {
-					val rating = if (ratingIdx >= 0) c.getInt(ratingIdx) else 0
-					val path = if (pathIdx >= 0) c.getString(pathIdx) else null
-					
-					val favourite = when {
-						// 只要在 Poweramp 里给过正分（2-5 星 / 赞）都算收藏
-						rating >= 2 -> true
-						rating == 1 -> false
-						else -> {
-							skipped++
-							continue
-						}
-					}
-					val trackId = trackIdFromPath(path)
-					if (trackId == null) {
-						skipped++
-						continue
-					}
-					if (client.setFavourite(trackId, favourite)) {
-						if (favourite) liked++ else unliked++
-					} else {
-						failed++
-					}
+	/** A：远端收藏 → Poweramp。返回写入数量；-1 表示没有权限。 */
+	suspend fun pushServerFavourites(
+		context: Context,
+		client: JellyfinClientManager
+	): Int = withContext(Dispatchers.IO) {
+		val favourites = client.getFavouriteTrackIds()
+		if (favourites.isEmpty()) return@withContext 0
+		
+		val rows = PowerampProvider.queryRows(context) ?: return@withContext -1
+		val byTrack = rows.mapNotNull { row ->
+			row.trackId?.let { it to row }
+		}.toMap()
+		val pushed = loadPushed(context)
+		var written = 0
+		
+		favourites.forEach { trackId ->
+			val row = byTrack[trackId] ?: return@forEach
+			if (row.rating == 0) {
+				if (PowerampProvider.setRating(context, row.rowId, 5)) {
+					written++
+					pushed.add(trackId.toString())
 				}
+			} else {
+				// 已经是喜欢，记下来，后面取消同步时才知道这首歌归我们管
+				pushed.add(trackId.toString())
 			}
-			
-			Log.i(TAG, "Synced: liked=$liked unliked=$unliked skipped=$skipped failed=$failed")
-			Result(liked, unliked, skipped, failed)
 		}
+		
+		savePushed(context, pushed)
+		if (written > 0) PowerampProvider.reloadData(context)
+		Log.i(TAG, "Pushed $written remote favourites to Poweramp")
+		written
+	}
 	
-	private fun trackIdFromPath(path: String?): UUID? {
-		if (path.isNullOrBlank()) return null
-		val lastSegment = path.substringAfterLast('/')
-		val decoded = try {
-			URLDecoder.decode(lastSegment, "UTF-8")
-		} catch (e: Exception) {
-			return null
+	/** B：Poweramp 喜欢集合 → 镜像到 Jellyfin。 */
+	suspend fun mirrorToJellyfin(
+		context: Context,
+		client: JellyfinClientManager
+	): MirrorResult = withContext(Dispatchers.IO) {
+		val rows = PowerampProvider.queryRows(context)
+			?: return@withContext MirrorResult(needsPermission = true)
+		
+		val known = rows.mapNotNull { it.trackId }.toSet()
+		val liked = rows.filter { it.rating >= 1 }.mapNotNull { it.trackId }.toSet()
+		val serverFavourites = client.getFavouriteTrackIds().toSet()
+		
+		var added = 0
+		var removed = 0
+		
+		(liked - serverFavourites).forEach { trackId ->
+			if (client.setFavourite(trackId, true)) added++
 		}
-		return when (val id = DocumentId.parse(decoded)) {
-			is DocumentId.Type.Track -> id.trackId
-			is DocumentId.Type.CacheTrack -> id.trackId
-			else -> null
+		(serverFavourites - liked).forEach { trackId ->
+			// 只处理 Poweramp 曲库里确实存在的歌，避免误删它没扫描到的远端收藏
+			if (trackId in known && client.setFavourite(trackId, false)) removed++
+		}
+		
+		val pushed = loadPushed(context)
+		liked.forEach { pushed.add(it.toString()) }
+		(serverFavourites - liked).forEach { pushed.remove(it.toString()) }
+		savePushed(context, pushed)
+		
+		Log.i(TAG, "Mirror: added=$added removed=$removed liked=${liked.size}")
+		MirrorResult(added, removed)
+	}
+	
+	private fun pushedFile(context: Context) = File(context.filesDir, PUSHED_FILE)
+	
+	private fun loadPushed(context: Context): MutableSet<String> {
+		return try {
+			val file = pushedFile(context)
+			if (!file.exists()) return mutableSetOf()
+			val array = JSONArray(file.readText())
+			val set = mutableSetOf<String>()
+			for (i in 0 until array.length()) set.add(array.getString(i))
+			set
+		} catch (e: Exception) {
+			Log.w(TAG, "Cannot read pushed set", e)
+			mutableSetOf()
 		}
 	}
 	
-	private fun requestDataAccess(context: Context) {
+	private fun savePushed(context: Context, set: Set<String>) {
 		try {
-			val intent = Intent(ACTION_ASK_FOR_DATA_PERMISSION).apply {
-				setClassName(POWERAMP_PACKAGE, API_RECEIVER)
-				putExtra("package", context.packageName)
-			}
-			context.sendBroadcast(intent)
+			val array = JSONArray()
+			set.forEach { array.put(it) }
+			pushedFile(context).writeText(array.toString())
 		} catch (e: Exception) {
-			Log.w(TAG, "Could not ask Poweramp for data access", e)
+			Log.w(TAG, "Cannot save pushed set", e)
 		}
 	}
 }

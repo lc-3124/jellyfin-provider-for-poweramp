@@ -83,7 +83,10 @@ data class UiStrings(
 	val completing: (Int, Int, String) -> String,
 	val completingShort: String,
 	val syncFailed: (String) -> String,
-	val syncedDownloading: (Int) -> String
+	val syncedDownloading: (Int) -> String,
+	val pushedToPoweramp: (Int) -> String,
+	val mirrorSummary: (Int, Int, Int, Int) -> String,
+	val downloadingProgress: (Int, Int, String) -> String
 )
 
 private val EN = UiStrings(
@@ -166,7 +169,10 @@ private val EN = UiStrings(
 	completing = { d, total, title -> "Completing $d/$total" + if (title.isBlank()) "" else ": $title" },
 	completingShort = "Completing partial downloads...",
 	syncFailed = { msg -> "Sync failed: $msg" },
-	syncedDownloading = { n -> "Synced $n likes, downloading favourites..." }
+	syncedDownloading = { n -> "Synced $n likes, downloading favourites..." },
+	pushedToPoweramp = { n -> "Added $n likes to Poweramp" },
+	mirrorSummary = { a, r, d, f -> "Jellyfin: +$a / -$r · downloaded $d, failed $f" },
+	downloadingProgress = { d, total, title -> "Downloading $d/$total" + if (title.isBlank()) "" else ": $title" }
 )
 
 private val ZH = EN.copy(
@@ -249,7 +255,10 @@ private val ZH = EN.copy(
 	completing = { d, total, title -> "补全 $d/$total" + if (title.isBlank()) "" else "：$title" },
 	completingShort = "正在补全未完成的缓存…",
 	syncFailed = { msg -> "同步失败：$msg" },
-	syncedDownloading = { n -> "已同步 $n 个点赞，正在下载收藏…" }
+	syncedDownloading = { n -> "已同步 $n 个点赞，正在下载收藏…" },
+	pushedToPoweramp = { n -> "已向 Poweramp 添加 $n 个喜欢" },
+	mirrorSummary = { a, r, d, f -> "Jellyfin：新增 $a / 取消 $r · 下载 $d 首，失败 $f 首" },
+	downloadingProgress = { d, total, title -> "正在下载 $d/$total" + if (title.isBlank()) "" else "：$title" }
 )
 
 private val JA = EN.copy(
@@ -332,7 +341,10 @@ private val JA = EN.copy(
 	completing = { d, total, title -> "$d/$total を補完中" + if (title.isBlank()) "" else "：$title" },
 	completingShort = "未完了のダウンロードを補完中…",
 	syncFailed = { msg -> "同期失敗：$msg" },
-	syncedDownloading = { n -> "$n 件のいいねを同期しました。お気に入りをダウンロード中…" }
+	syncedDownloading = { n -> "$n 件のいいねを同期しました。お気に入りをダウンロード中…" },
+	pushedToPoweramp = { n -> "Poweramp に $n 件のいいねを追加しました" },
+	mirrorSummary = { a, r, d, f -> "Jellyfin：追加 $a / 解除 $r · ダウンロード $d 件、失敗 $f 件" },
+	downloadingProgress = { d, total, title -> "$d/$total をダウンロード中" + if (title.isBlank()) "" else "：$title" }
 )
 
 enum class AppLanguage(val id: String) {

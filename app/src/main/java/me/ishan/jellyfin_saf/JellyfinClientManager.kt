@@ -39,6 +39,7 @@ import org.jellyfin.sdk.model.UUID
 import org.jellyfin.sdk.model.api.BaseItemDto
 import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.ImageType
+import org.jellyfin.sdk.model.api.ItemFilter
 import org.jellyfin.sdk.model.api.ItemFields
 import java.io.File
 import java.nio.channels.FileChannel
@@ -267,6 +268,34 @@ class JellyfinClientManager(private val context: Context? = null) {
 				false
 			}
 		}
+	
+	/** 远端收藏的全部曲目 id（分页拉取）。 */
+	suspend fun getFavouriteTrackIds(): List<UUID> = withContext(Dispatchers.IO) {
+		val apiClient = getApiClient() ?: return@withContext emptyList()
+		val userId = currentUserId ?: return@withContext emptyList()
+		val result = ArrayList<UUID>()
+		var start = 0
+		val pageSize = 500
+		try {
+			while (true) {
+				val page = apiClient.itemsApi.getItems(
+					userId = userId,
+					includeItemTypes = setOf(BaseItemKind.AUDIO),
+					recursive = true,
+					filters = setOf(ItemFilter.IS_FAVORITE),
+					limit = pageSize,
+					startIndex = start
+				)
+				val items = page.content.items
+				items.forEach { result.add(it.id) }
+				if (items.size < pageSize) break
+				start += pageSize
+			}
+		} catch (e: Exception) {
+			Log.e(TAG, "Failed to fetch favourite tracks", e)
+		}
+		result
+	}
 	
 	/**
 	 * Logout and clear credentials

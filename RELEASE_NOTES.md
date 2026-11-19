@@ -1,4 +1,4 @@
-# v0.3.0-preview — Jellyfin Provider for Poweramp
+# v0.5.0-preview — Jellyfin Provider for Poweramp
 
 > **Unofficial fork / 非官方 fork**
 >
@@ -31,87 +31,72 @@ signed with a maintainer release key and has **not** been security-audited.
 APK 使用 **Android 默认 debug 证书**签名，并非维护者正式发布证书，也未经任何安全审计。安装即表示
 你接受这一风险，不提供任何担保。
 
-## What's new in this preview
+## What's new
 
-**Renamed** to *Jellyfin Provider for Poweramp* (launcher label and project name).
+**Bidirectional favourites with Poweramp** (preview, needs real-device validation):
 
-**Audio quality tiers** — choose in the app settings:
+- *Scan Library* now pushes every Jellyfin favourite into Poweramp by writing `rating = 5` through
+  Poweramp's content provider (existing 1–5 ratings are left untouched; nothing is deleted; nothing
+  is downloaded).
+- *Sync Poweramp Likes* mirrors Poweramp back to Jellyfin: every track rated 1–5 becomes a Jellyfin
+  favourite, and Jellyfin favourites that Poweramp knows about but does not like are removed. The
+  favourites are then downloaded at the selected quality tier.
+- Writes are verified per row; if Poweramp refuses access the app asks for data permission via
+  `ACTION_ASK_FOR_DATA_PERMISSION` and stops instead of guessing.
 
-| Tier | Request | Cached as |
-| --- | --- | --- |
-| Lossless | original file (`static=true`) | `<id>.cache` |
-| Medium 128k | AAC transcoded | `<id>.aac128.cache` |
-| Low 64k | AAC transcoded | `<id>.aac64.cache` |
+**Localized UI** — English / 中文 / 日本語. Auto follows the system locale; the ⓘ button in the top
+right lets you switch language and shows credits for ishanjain28 (original project) and lc3124
+(this fork), each linking to GitHub.
 
-- One cached copy per track, highest tier wins; lowering the setting never deletes a better copy.
-- Transcoded tiers are delivered through a proxy file descriptor: playback starts while the file is
-  still being written, and the track is promoted to the cache when the download finishes.
-- Requests carry a unique `playSessionId`; without it Jellyfin reuses an existing transcode job and
-  silently ignores the requested bitrate.
+**Cache panel** is now a table: bold total (GiB + song count), three equal-width quality columns,
+the favourite count, then artwork and database sizes.
 
-**Poweramp likes → Jellyfin favourites**
-
-- Reads Poweramp's content provider (`rating`, `file_path`); the path embeds this provider's
-  document id, so the mapping to the Jellyfin track UUID is exact.
-- Any positive rating (2–5 stars) counts as a like, 1 is unlike, 0 is left untouched.
-- After syncing, favourited tracks are downloaded at the selected tier.
-
-**Fixes**
-
-- Crash after sync: favourite count query ran on the main thread.
-- Favourite API returned 404: `markFavoriteItem(itemId, userId)` argument order.
-- Cache index was wiped by `INSERT OR REPLACE` cascading into `track_state`; now `@Upsert` plus a
-  startup recovery for orphaned cache files.
-- Eviction was not LRU, deleted metadata and fired its callback twice.
-- Rows disappeared when the caller used a narrow column projection.
-- Reader-count race on tracks opened by several consumers.
-- Plaintext password kept after logout.
+**Fixes carried over** — truncated transcodes are no longer treated as complete or as EOF (the cause
+of tracks skipping mid-playback); OkHttp's 60 s whole-call timeout was removed; the provider update
+path is only used for `rating`, never for structural tables.
 
 ## Artifact
 
 | Field | Value |
 | --- | --- |
-| File | `jellyfin-provider-for-poweramp-0.3.0-preview-arm64-v8a_x86_64.apk` |
-| Version | 0.3.0-preview (versionCode 20) |
+| File | `jellyfin-provider-for-poweramp-0.5.0-preview-arm64-v8a_x86_64.apk` |
+| Version | 0.5.0-preview (versionCode 23) |
 | Size | 3.0 MB |
 | ABIs | `arm64-v8a`, `x86_64` |
 | minSdk / targetSdk | 26 / 36 |
-| SHA-256 | `8bc7ab43ec2ecf32377ed8f0a88613d44a7957c980b08cf27af7e4afb1c1b3d5` |
+| SHA-256 | `8cd7ca5d34a8ef11b21ab4c70d2c5ef5f4a61c97171dbc0db5c26d8d6ded385e` |
 
 ## Install
 
 ```bash
-adb install -r jellyfin-provider-for-poweramp-0.3.0-preview-arm64-v8a_x86_64.apk
+adb install -r jellyfin-provider-for-poweramp-0.5.0-preview-arm64-v8a_x86_64.apk
 ```
-
-Or copy the APK to the device and open it (allow "install unknown apps" for the file manager).
-Because the signature is the shared Android debug key, it can replace an earlier build of this fork
-without uninstalling; cached music is preserved.
 
 ## Verify
 
 ```bash
-sha256sum jellyfin-provider-for-poweramp-0.3.0-preview-arm64-v8a_x86_64.apk
-# must print 8bc7ab43ec2ecf32377ed8f0a88613d44a7957c980b08cf27af7e4afb1c1b3d5
+sha256sum jellyfin-provider-for-poweramp-0.5.0-preview-arm64-v8a_x86_64.apk
+# must print 8cd7ca5d34a8ef11b21ab4c70d2c5ef5f4a61c97171dbc0db5c26d8d6ded385e
 ```
 
 ## Known issues
 
-1. Background playback may pause when both the provider and the player are backgrounded (Android
+1. Writing ratings into Poweramp uses its **undocumented** content provider. It was verified on
+   Poweramp build 1035 in an emulator; a future Poweramp build could change or reject it. The app
+   verifies each write and aborts safely.
+2. The removal half of the mirror only applies to tracks Poweramp has scanned, so favourites for
+   tracks it has never seen are kept.
+3. Background playback may pause when both the provider and the player are backgrounded (Android
    battery optimisation). Set the provider's battery usage to **Unrestricted**.
-2. Transcoding tiers need server-side ffmpeg. A first play waits ~1 s for the transcoder to start,
-   then plays while downloading; the waveform appears once the whole track has arrived.
-3. Files stored on a flaky network mount may fail to transcode (the server logs `FFmpeg exited with
-   code 183`); the app falls back to an existing cache or the original stream.
-4. The first browse of a large library fetches the album list from the server; it is cached for two
-   minutes afterwards.
+4. Transcoding tiers need server-side ffmpeg; a first play waits for the transcoder to start, then
+   plays while downloading.
 
 ## 中文摘要
 
-- 项目更名为 **Jellyfin Provider for Poweramp**。
-- 新增三档音质：无损 / Medium 128k AAC / Low 64k AAC，可在设置里切换；每首歌只保留一份缓存，
-  降档不会删掉更高质量的副本。
-- 转码档边下边播、下完自动转正为缓存；修复了 Jellyfin 复用转码任务导致码率不生效的问题。
-- Poweramp 的点赞（2–5 星）会同步为 Jellyfin 收藏并自动下载这些收藏曲目；1 星取消收藏，0 星不动。
-- 修复了同步后崩溃、收藏接口 404、缓存索引被级联删除、淘汰非 LRU 等问题。
-- 本版本为 **preview**，使用 Android 默认 debug 证书签名，未经安全审计，请自行核对 SHA-256。
+- **收藏双向同步**（预览）：扫描库后把 Jellyfin 收藏逐首写成 Poweramp 的 5 星喜欢，只增不减、
+  不下载；手动同步则把 Poweramp 的喜欢镜像回 Jellyfin（1–5 全算喜欢，Poweramp 未喜欢的远端收藏
+  会被取消，然后按当前音质下载收藏）。
+- 写入走 Poweramp 未公开的 content provider，逐条校验；被拒绝时请求授权并停止。
+- 界面支持英文 / 中文 / 日文，自动跟随系统，右上角 ⓘ 可切换并查看原作者与修改者署名。
+- 缓存统计改为表格：总量（GiB + 首数）、三档音质等宽列、收藏数、封面与数据库。
+- 修复转码中断被当成“下载完成/文件结束”导致的播放中跳歌。

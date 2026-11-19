@@ -140,6 +140,18 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					Toast.makeText(context, scanProgress, Toast.LENGTH_LONG).show()
 					isScanning = false
 					
+					// 扫描完成后把远端收藏增量写进 Poweramp（只增不减、不下载）
+					scope.launch(Dispatchers.IO) {
+						val pushed = PowerampSync.pushServerFavourites(context, manager)
+						if (pushed > 0) {
+							withContext(Dispatchers.Main) {
+								Toast.makeText(
+									context, t.pushedToPoweramp(pushed), Toast.LENGTH_LONG
+								).show()
+							}
+						}
+					}
+					
 					// trigger a cache breakdown refresh
 					scope.launch(Dispatchers.IO) {
 						val breakdown = playbackManager.getCacheSizeBreakdown()
@@ -158,12 +170,8 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		}
 	}
 	
-	// 启动时先把 Poweramp 的点赞同步过来，再读统计
 	LaunchedEffect(Unit) {
 		scope.launch(Dispatchers.IO) {
-			if (manager.isAuthenticated()) {
-				runCatching { PowerampSync.sync(context, manager) }
-			}
 			val breakdown = playbackManager.getCacheSizeBreakdown()
 			val favourites = AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
 			withContext(Dispatchers.Main) {
@@ -491,10 +499,6 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		OutlinedButton(
 			onClick = {
 				scope.launch(Dispatchers.IO) {
-					// 刷新时顺带同步一次，避免“点了赞但界面没变”
-					if (manager.isAuthenticated()) {
-						runCatching { PowerampSync.sync(context, manager) }
-					}
 					val breakdown = playbackManager.getCacheSizeBreakdown()
 					val favourites = AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
 					withContext(Dispatchers.Main) {
@@ -561,14 +565,10 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 				isSyncing = true
 				syncProgress = t.readingPoweramp
 				scope.launch {
-					val result = PowerampSync.sync(context, manager)
+					val result = PowerampSync.mirrorToJellyfin(context, manager)
 					if (result.needsPermission) {
 						isSyncing = false
-						Toast.makeText(
-							context,
-							t.grantAccess,
-							Toast.LENGTH_LONG
-						).show()
+						Toast.makeText(context, t.grantAccess, Toast.LENGTH_LONG).show()
 						return@launch
 					}
 					if (result.error != null) {
@@ -578,30 +578,23 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 						).show()
 						return@launch
 					}
-					syncProgress =
-						t.syncedDownloading(result.liked + result.unliked)
+					syncProgress = t.syncedDownloading(result.total)
 					val dl = playbackManager.downloadFavouriteTracks(manager, manager.getQuality()) { done, total, title ->
 						withContext(Dispatchers.Main) {
-							syncProgress = "Downloading $done/$total${
-								if (title.isNotBlank()) ": $title" else ""
-							}"
+							syncProgress = t.downloadingProgress(done, total, title)
 						}
 					}
 					val breakdown = withContext(Dispatchers.IO) {
 						playbackManager.getCacheSizeBreakdown()
 					}
 					cacheBreakdown = breakdown
-					// Room 不允许主线程访问数据库，必须切到 IO
 					favouriteCount = withContext(Dispatchers.IO) {
 						AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
 					}
 					isSyncing = false
 					Toast.makeText(
 						context,
-						t.syncSummary(
-							result.liked, result.unliked,
-							dl.downloaded, dl.skipped, dl.failed
-						),
+						t.mirrorSummary(result.added, result.removed, dl.downloaded, dl.failed),
 						Toast.LENGTH_LONG
 					).show()
 				}

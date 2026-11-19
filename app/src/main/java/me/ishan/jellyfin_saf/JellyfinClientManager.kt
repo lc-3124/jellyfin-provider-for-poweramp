@@ -244,9 +244,9 @@ class JellyfinClientManager(private val context: Context? = null) {
 			val userId = currentUserId ?: return@withContext false
 			try {
 				if (favourite) {
-					apiClient.userLibraryApi.markFavoriteItem(userId, trackId)
+					apiClient.userLibraryApi.markFavoriteItem(itemId = trackId, userId = userId)
 				} else {
-					apiClient.userLibraryApi.unmarkFavoriteItem(userId, trackId)
+					apiClient.userLibraryApi.unmarkFavoriteItem(itemId = trackId, userId = userId)
 				}
 				db?.trackDao()?.getTrackById(trackId)?.let { track ->
 					db.trackDao().insertTrack(track.copy(isFavourite = favourite))

@@ -38,6 +38,9 @@ interface TrackDao {
     @Query("DELETE FROM track_metadata WHERE is_favourite = 0")
     fun deleteTracksExcludingFav()
 
+    @Query("SELECT COUNT(*) FROM track_metadata WHERE is_favourite = 1")
+    fun getFavouriteCount(): Int
+
     @Query("SELECT id FROM track_metadata WHERE is_favourite = 1")
     fun getFavouriteTrackIds(): List<UUID>
 

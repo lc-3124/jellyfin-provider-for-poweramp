@@ -94,6 +94,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 	var completeProgress by remember { mutableStateOf("") }
 	var isSyncing by remember { mutableStateOf(false) }
 	var syncProgress by remember { mutableStateOf("") }
+	var favouriteCount by remember { mutableStateOf(0) }
 	var showDeleteMenu by remember { mutableStateOf(false) }
 	var showResetConfirm by remember { mutableStateOf(false) }
 	var isScanning by remember { mutableStateOf(false) }
@@ -143,12 +144,17 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		}
 	}
 	
-	// Calculate cache size breakdown on launch
+	// 启动时先把 Poweramp 的点赞同步过来，再读统计
 	LaunchedEffect(Unit) {
 		scope.launch(Dispatchers.IO) {
+			if (manager.isAuthenticated()) {
+				runCatching { PowerampSync.sync(context, manager) }
+			}
 			val breakdown = playbackManager.getCacheSizeBreakdown()
+			val favourites = AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
 			withContext(Dispatchers.Main) {
 				cacheBreakdown = breakdown
+				favouriteCount = favourites
 			}
 		}
 	}
@@ -396,6 +402,12 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		cacheBreakdown?.let { breakdown ->
 			Column(modifier = Modifier.fillMaxWidth()) {
 				Text(
+					text = "Liked on Jellyfin: $favouriteCount songs",
+					style = MaterialTheme.typography.bodyLarge,
+					color = MaterialTheme.colorScheme.onSurface,
+					modifier = Modifier.padding(bottom = 4.dp)
+				)
+				Text(
 					text = "Currently cached: ${
 						String.format(
 							"%.2f MB", breakdown.totalSize / (1024.0 * 1024.0)
@@ -462,9 +474,15 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		OutlinedButton(
 			onClick = {
 				scope.launch(Dispatchers.IO) {
+					// 刷新时顺带同步一次，避免“点了赞但界面没变”
+					if (manager.isAuthenticated()) {
+						runCatching { PowerampSync.sync(context, manager) }
+					}
 					val breakdown = playbackManager.getCacheSizeBreakdown()
+					val favourites = AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
 					withContext(Dispatchers.Main) {
 						cacheBreakdown = breakdown
+						favouriteCount = favourites
 						Toast.makeText(context, "Cache stats refreshed", Toast.LENGTH_SHORT).show()
 					}
 				}
@@ -556,6 +574,8 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 						playbackManager.getCacheSizeBreakdown()
 					}
 					cacheBreakdown = breakdown
+					favouriteCount =
+						AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
 					isSyncing = false
 					Toast.makeText(
 						context,

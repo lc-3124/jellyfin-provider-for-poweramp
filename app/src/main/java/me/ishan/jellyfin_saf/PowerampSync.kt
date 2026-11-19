@@ -70,7 +70,8 @@ object PowerampSync {
 					val path = if (pathIdx >= 0) c.getString(pathIdx) else null
 					
 					val favourite = when {
-						rating >= 4 -> true
+						// 只要在 Poweramp 里给过正分（2-5 星 / 赞）都算收藏
+						rating >= 2 -> true
 						rating == 1 -> false
 						else -> {
 							skipped++

@@ -10,27 +10,25 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * 按服务器上的物理路径重建目录树。
+ * 目录视图：第一层按服务器上的物理目录（专辑艺术家 / 厂牌），
+ * 第二层按 Jellyfin 的专辑聚合，显示专辑名，第三层是曲目。
  *
- * Jellyfin 的界面按标签聚合，但每个音频条目都保留了原始 Path。这里把所有
- * Path 拉下来、剥掉公共前缀，做成 目录 -> 子目录/曲目 的树，供 SAF 的
- * "Jellyfin Folders" 根使用。
+ * 这样同一个厂牌不会因为专辑艺术家标签写法不同而被拆成多个。
  */
 object FolderLibrary {
 	private const val TAG = "FolderLibrary"
 	private const val FILE_NAME = "library_folders.json"
+	private const val SCHEMA = 3
 	
-	data class TrackRef(val trackId: UUID, val fileName: String)
+	data class TrackRef(val trackId: UUID, val title: String)
+	data class AlbumNode(val key: String, val name: String, val tracks: List<TrackRef>)
+	data class ArtistNode(val key: String, val name: String, val albums: List<AlbumNode>)
 	
-	data class Node(
-		val path: String,
-		val name: String,
-		val dirs: List<String>,
-		val tracks: List<TrackRef>
-	)
-	
-	data class Tree(val roots: List<String>, val nodes: Map<String, Node>) {
-		fun node(path: String): Node? = nodes[path]
+	data class Tree(val artists: List<ArtistNode>) {
+		fun artist(key: String): ArtistNode? = artists.firstOrNull { it.key == key }
+		
+		fun album(artistKey: String, albumKey: String): AlbumNode? =
+			artist(artistKey)?.albums?.firstOrNull { it.key == albumKey }
 	}
 	
 	@Volatile
@@ -45,63 +43,68 @@ object FolderLibrary {
 		cached = null
 	}
 	
-	/** 重新抓取路径并建树，返回索引到的曲目数。 */
+	/** 重新抓路径/元数据并建树，返回曲目数。 */
 	suspend fun rebuild(context: Context, client: JellyfinClientManager): Int =
 		withContext(Dispatchers.IO) {
-			val items = client.getAllTrackPaths()
-			if (items.isEmpty()) return@withContext 0
+			val paths = client.getAllTrackPaths()
+			if (paths.isEmpty()) return@withContext 0
 			
-			val split = items.map { (id, path) ->
-				id to path.replace('\\', '/').split('/').filter { it.isNotBlank() }
-			}.filter { it.second.isNotEmpty() }
-			if (split.isEmpty()) return@withContext 0
+			val metadata = client.getAllTrackInfo().associateBy { it.id }
+			val artists = LinkedHashMap<String, MutableArtist>()
 			
-			val common = commonDirectoryPrefix(split.map { it.second })
+			// 先剥掉所有路径的公共目录前缀（服务器上的挂载点），否则第一段永远是 "home"
+			val allSegments = paths.map { (_, path) ->
+				path.replace('\\', '/').split('/').filter { it.isNotBlank() }
+			}
+			val commonPrefix = commonDirectoryPrefix(allSegments)
 			
-			val nodes = HashMap<String, MutableNode>()
-			nodes[""] = MutableNode("", "Jellyfin Folders")
-			
-			split.forEach { (id, segments) ->
-				val relative = segments.drop(common.size)
-				if (relative.isEmpty()) return@forEach
-				val fileName = relative.last()
-				val dirSegments = relative.dropLast(1)
+			paths.forEach { (trackId, path) ->
+				val segments = path.replace('\\', '/').split('/').filter { it.isNotBlank() }
+				val relative = segments.drop(commonPrefix.size)
+				val meta = metadata[trackId]
 				
-				var parentPath = ""
-				dirSegments.forEach { segment ->
-					val childPath =
-						if (parentPath.isEmpty()) segment else "$parentPath/$segment"
-					val parent = nodes.getOrPut(parentPath) {
-						MutableNode(parentPath, if (parentPath.isEmpty()) "Jellyfin Folders" else parentPath.substringAfterLast('/'))
-					}
-					if (childPath !in parent.dirs) parent.dirs.add(childPath)
-					nodes.getOrPut(childPath) { MutableNode(childPath, segment) }
-					parentPath = childPath
+				val artistKey = when {
+					relative.size >= 2 -> relative.first()
+					meta?.albumArtist?.isNotBlank() == true -> meta.albumArtist
+					else -> "Unknown Artist"
 				}
+				val albumKey = meta?.albumId?.toString()
+					?: "name:${meta?.album ?: "Unknown Album"}"
+				val albumName = meta?.album ?: "Unknown Album"
+				val title = meta?.title ?: relative.lastOrNull() ?: trackId.toString()
 				
-				val leaf = nodes.getOrPut(parentPath) {
-					MutableNode(parentPath, if (parentPath.isEmpty()) "Jellyfin Folders" else parentPath.substringAfterLast('/'))
+				val artist = artists.getOrPut(artistKey) {
+					MutableArtist(artistKey, artistKey)
 				}
-				leaf.tracks.add(TrackRef(id, fileName))
+				val album = artist.albums.getOrPut(albumKey) {
+					MutableAlbum(albumKey, albumName)
+				}
+				album.tracks.add(TrackRef(trackId, title))
 			}
 			
-			val finalNodes = nodes.mapValues { (_, node) ->
-				Node(
-					path = node.path,
-					name = node.name,
-					dirs = node.dirs.sorted(),
-					tracks = node.tracks.sortedBy { it.fileName.lowercase() }
-				)
-			}
-			val tree = Tree(finalNodes[""]?.dirs ?: emptyList(), finalNodes)
+			val tree = Tree(
+				artists.values.map { artist ->
+					ArtistNode(
+						key = artist.key,
+						name = artist.name,
+						albums = artist.albums.values.map { album ->
+							AlbumNode(
+								key = album.key,
+								name = album.name,
+								tracks = album.tracks.sortedBy { it.title.lowercase() }
+							)
+						}.sortedBy { it.name.lowercase() }
+					)
+				}.sortedBy { it.name.lowercase() }
+			)
 			save(context, tree)
 			cached = tree
-			Log.i(TAG, "Folder tree: ${finalNodes.size} dirs, ${items.size} tracks")
-			items.size
+			Log.i(TAG, "Folder tree: ${tree.artists.size} artists, ${paths.size} tracks")
+			paths.size
 		}
 	
 	private fun commonDirectoryPrefix(paths: List<List<String>>): List<String> {
-		val dirs = paths.map { it.dropLast(1) }
+		val dirs = paths.map { it.dropLast(1) }.filter { it.isNotEmpty() }
 		if (dirs.isEmpty()) return emptyList()
 		val first = dirs.first()
 		var commonLength = first.size
@@ -113,10 +116,15 @@ object FolderLibrary {
 		return first.take(commonLength)
 	}
 	
-	private data class MutableNode(
-		val path: String,
+	private data class MutableArtist(
+		val key: String,
 		val name: String,
-		val dirs: MutableList<String> = mutableListOf(),
+		val albums: LinkedHashMap<String, MutableAlbum> = LinkedHashMap()
+	)
+	
+	private data class MutableAlbum(
+		val key: String,
+		val name: String,
 		val tracks: MutableList<TrackRef> = mutableListOf()
 	)
 	
@@ -125,23 +133,31 @@ object FolderLibrary {
 	private fun save(context: Context, tree: Tree) {
 		try {
 			val root = JSONObject()
-			root.put("roots", JSONArray(tree.roots))
-			val nodes = JSONObject()
-			tree.nodes.forEach { (path, node) ->
-				val obj = JSONObject()
-				obj.put("name", node.name)
-				obj.put("dirs", JSONArray(node.dirs))
-				val tracks = JSONArray()
-				node.tracks.forEach { ref ->
-					tracks.put(JSONArray().apply {
-						put(ref.trackId.toString())
-						put(ref.fileName)
-					})
+			root.put("schema", SCHEMA)
+			val artists = JSONArray()
+			tree.artists.forEach { artist ->
+				val artistObj = JSONObject()
+				artistObj.put("key", artist.key)
+				artistObj.put("name", artist.name)
+				val albums = JSONArray()
+				artist.albums.forEach { album ->
+					val albumObj = JSONObject()
+					albumObj.put("key", album.key)
+					albumObj.put("name", album.name)
+					val tracks = JSONArray()
+					album.tracks.forEach { ref ->
+						tracks.put(JSONArray().apply {
+							put(ref.trackId.toString())
+							put(ref.title)
+						})
+					}
+					albumObj.put("tracks", tracks)
+					albums.put(albumObj)
 				}
-				obj.put("tracks", tracks)
-				nodes.put(path, obj)
+				artistObj.put("albums", albums)
+				artists.put(artistObj)
 			}
-			root.put("nodes", nodes)
+			root.put("artists", artists)
 			file(context).writeText(root.toString())
 		} catch (e: Exception) {
 			Log.e(TAG, "Cannot save folder tree", e)
@@ -153,22 +169,25 @@ object FolderLibrary {
 			val f = file(context)
 			if (!f.exists()) return null
 			val root = JSONObject(f.readText())
-			val rootsArray = root.getJSONArray("roots")
-			val roots = (0 until rootsArray.length()).map { rootsArray.getString(it) }
-			val nodesObj = root.getJSONObject("nodes")
-			val nodes = HashMap<String, Node>()
-			nodesObj.keys().forEach { path ->
-				val obj = nodesObj.getJSONObject(path)
-				val dirsArray = obj.getJSONArray("dirs")
-				val dirs = (0 until dirsArray.length()).map { dirsArray.getString(it) }
-				val tracksArray = obj.getJSONArray("tracks")
-				val tracks = (0 until tracksArray.length()).map { i ->
-					val pair = tracksArray.getJSONArray(i)
-					TrackRef(UUID.fromString(pair.getString(0)), pair.getString(1))
+			if (root.optInt("schema", 0) != SCHEMA) return null
+			val artistsArray = root.getJSONArray("artists")
+			val artists = (0 until artistsArray.length()).map { i ->
+				val artistObj = artistsArray.getJSONObject(i)
+				val albumsArray = artistObj.getJSONArray("albums")
+				val albums = (0 until albumsArray.length()).map { j ->
+					val albumObj = albumsArray.getJSONObject(j)
+					val tracksArray = albumObj.getJSONArray("tracks")
+					val tracks = (0 until tracksArray.length()).map { k ->
+						val pair = tracksArray.getJSONArray(k)
+						TrackRef(UUID.fromString(pair.getString(0)), pair.getString(1))
+					}
+					AlbumNode(albumObj.getString("key"), albumObj.getString("name"), tracks)
 				}
-				nodes[path] = Node(path, obj.getString("name"), dirs, tracks)
+				ArtistNode(
+					artistObj.getString("key"), artistObj.getString("name"), albums
+				)
 			}
-			Tree(roots, nodes)
+			Tree(artists)
 		} catch (e: Exception) {
 			Log.e(TAG, "Cannot load folder tree", e)
 			null

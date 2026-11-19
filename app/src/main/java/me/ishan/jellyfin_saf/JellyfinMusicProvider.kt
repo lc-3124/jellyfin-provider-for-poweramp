@@ -196,6 +196,23 @@ class JellyfinMusicProvider : DocumentsProvider() {
 				)
 			}
 			
+			is DocumentId.Type.Artist -> {
+				val name = FolderLibrary.get(context ?: return result)
+					?.artist(documentId.key)?.name ?: documentId.key
+				addDirectory(
+					result, cols, docId, name, Document.FLAG_DIR_PREFERS_GRID
+				)
+			}
+			
+			is DocumentId.Type.FolderAlbum -> {
+				val name = FolderLibrary.get(context ?: return result)
+					?.album(documentId.artistKey, documentId.albumKey)?.name
+					?: documentId.albumKey
+				addDirectory(
+					result, cols, docId, name, Document.FLAG_DIR_PREFERS_GRID
+				)
+			}
+			
 			is DocumentId.Type.CacheRoot -> addDirectory(
 				result, cols, CACHE_ROOT_ID, "Jellyfin Cache",
 				Document.FLAG_DIR_PREFERS_GRID or Document.FLAG_SUPPORTS_THUMBNAIL
@@ -301,13 +318,15 @@ class JellyfinMusicProvider : DocumentsProvider() {
 					}
 				}
 				
-				is DocumentId.Type.FoldersRoot -> {
-					addFolderChildren(result, cols, "")
-				}
+				is DocumentId.Type.FoldersRoot -> addArtists(result, cols)
 				
-				is DocumentId.Type.Folder -> {
-					addFolderChildren(result, cols, parentId.path)
-				}
+				is DocumentId.Type.Artist -> addAlbums(result, cols, parentId.key)
+				
+				is DocumentId.Type.FolderAlbum -> addAlbumTracks(
+					result, cols, parentId.artistKey, parentId.albumKey
+				)
+				
+				is DocumentId.Type.Folder -> addFolderChildren(result, cols, parentId.path)
 				
 				is DocumentId.Type.Album -> {
 					val tracks = runBlocking {
@@ -529,6 +548,16 @@ class JellyfinMusicProvider : DocumentsProvider() {
 		val albumId = when (val docId = DocumentId.parse(documentId)) {
 			is DocumentId.Type.Album -> docId.albumId
 			is DocumentId.Type.CacheAlbum -> docId.albumId
+			is DocumentId.Type.FolderAlbum -> {
+				val tree = FolderLibrary.get(context ?: throw FileNotFoundException("no context"))
+				val album = tree?.album(docId.artistKey, docId.albumKey)
+				val firstTrack = album?.tracks?.firstOrNull()?.trackId
+				val fromMeta = firstTrack?.let { playbackManager.getTrackInfo(it)?.albumId }
+				val fromKey = runCatching { org.jellyfin.sdk.model.UUID.fromString(docId.albumKey) }
+					.getOrNull()
+				fromMeta ?: fromKey
+					?: throw FileNotFoundException("No album for ${docId.albumKey}")
+			}
 			is DocumentId.Type.Track -> docId.albumId
 			is DocumentId.Type.CacheTrack -> docId.albumId
 			else -> throw IOException(
@@ -564,8 +593,14 @@ class JellyfinMusicProvider : DocumentsProvider() {
 		return when (parentId) {
 			is DocumentId.Type.Root -> true
 			// 目录根下面既有子目录，也可能直接有曲目（库根目录的文件）
+			// Android 会用树根校验树里每一个文档，所以根节点必须接受所有后代
 			is DocumentId.Type.FoldersRoot ->
-				docId is DocumentId.Type.Folder || docId is DocumentId.Type.Track
+				docId is DocumentId.Type.Artist ||
+					docId is DocumentId.Type.FolderAlbum ||
+					docId is DocumentId.Type.Track
+			is DocumentId.Type.Artist ->
+				docId is DocumentId.Type.FolderAlbum || docId is DocumentId.Type.Track
+			is DocumentId.Type.FolderAlbum -> docId is DocumentId.Type.Track
 			is DocumentId.Type.Folder ->
 				docId is DocumentId.Type.Folder || docId is DocumentId.Type.Track
 			is DocumentId.Type.Album -> docId is DocumentId.Type.Track
@@ -589,26 +624,45 @@ class JellyfinMusicProvider : DocumentsProvider() {
 	
 	// -------------------------------------------------------------- helpers --
 	
-	private fun addFolderChildren(cursor: MatrixCursor, cols: Set<String>, path: String) {
-		val ctx = context ?: return
-		val tree = FolderLibrary.get(ctx) ?: return
-		val node = tree.node(path) ?: return
-		
-		node.dirs.forEach { childPath ->
-			val child = tree.node(childPath) ?: return@forEach
+	private fun addArtists(cursor: MatrixCursor, cols: Set<String>) {
+		val tree = FolderLibrary.get(context ?: return) ?: return
+		tree.artists.forEach { artist ->
 			cursor.newRow().apply {
-				putIf(cols, Document.COLUMN_DOCUMENT_ID, DocumentId.forFolder(childPath))
+				putIf(cols, Document.COLUMN_DOCUMENT_ID, DocumentId.forArtist(artist.key))
 				putIf(cols, Document.COLUMN_MIME_TYPE, Document.MIME_TYPE_DIR)
-				putIf(cols, Document.COLUMN_DISPLAY_NAME, child.name)
+				putIf(cols, Document.COLUMN_DISPLAY_NAME, artist.name)
+				putIf(cols, Document.COLUMN_SUMMARY, "${artist.albums.size} albums")
+				putIf(cols, Document.COLUMN_FLAGS, 0)
+			}
+		}
+	}
+	
+	private fun addAlbums(cursor: MatrixCursor, cols: Set<String>, artistKey: String) {
+		val tree = FolderLibrary.get(context ?: return) ?: return
+		val artist = tree.artist(artistKey) ?: return
+		artist.albums.forEach { album ->
+			cursor.newRow().apply {
 				putIf(
-					cols, Document.COLUMN_SUMMARY,
-					"${child.dirs.size} folders · ${child.tracks.size} songs"
+					cols, Document.COLUMN_DOCUMENT_ID,
+					DocumentId.forFolderAlbum(artist.key, album.key)
 				)
+				putIf(cols, Document.COLUMN_MIME_TYPE, Document.MIME_TYPE_DIR)
+				putIf(cols, Document.COLUMN_DISPLAY_NAME, album.name)
+				putIf(cols, Document.COLUMN_SUMMARY, "${album.tracks.size} songs")
 				putIf(cols, Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_THUMBNAIL)
 			}
 		}
-		
-		node.tracks.forEach { ref ->
+	}
+	
+	private fun addAlbumTracks(
+		cursor: MatrixCursor,
+		cols: Set<String>,
+		artistKey: String,
+		albumKey: String
+	) {
+		val tree = FolderLibrary.get(context ?: return) ?: return
+		val album = tree.album(artistKey, albumKey) ?: return
+		album.tracks.forEach { ref ->
 			val metadata = playbackManager.getTrackInfo(ref.trackId)
 				?: runBlocking { jellyfinClient.getTrackMetadata(ref.trackId) }
 				?: return@forEach
@@ -621,9 +675,14 @@ class JellyfinMusicProvider : DocumentsProvider() {
 				size = metadata.size,
 				lastModified = metadata.lastFetched,
 				lyrics = null,
-				displayName = ref.fileName
+				displayName = ref.title
 			)
 		}
+	}
+	
+	/** 旧版目录树的兼容入口，新树不再产生 dir; 文档。 */
+	private fun addFolderChildren(cursor: MatrixCursor, cols: Set<String>, path: String) {
+		// no-op：旧树已被 artist/album 结构取代
 	}
 	
 	private fun addDirectory(

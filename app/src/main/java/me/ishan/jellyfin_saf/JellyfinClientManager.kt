@@ -269,6 +269,14 @@ class JellyfinClientManager(private val context: Context? = null) {
 			}
 		}
 	
+	/** 全部曲目元数据，建目录树时用来取专辑/标题。 */
+	suspend fun getAllTrackInfo(): List<me.ishan.jellyfin_saf.db.TrackEntity> =
+		withContext(Dispatchers.IO) {
+			val db = context?.let { me.ishan.jellyfin_saf.db.AppDatabase.getDatabase(it) }
+				?: return@withContext emptyList()
+			db.trackDao().getAllTracks()
+		}
+	
 	/** 全部曲目的 (id, 服务器路径)，用于重建物理目录树。 */
 	suspend fun getAllTrackPaths(): List<Pair<UUID, String>> = withContext(Dispatchers.IO) {
 		val apiClient = getApiClient() ?: return@withContext emptyList()

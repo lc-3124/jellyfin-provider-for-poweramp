@@ -30,9 +30,23 @@ object DocumentId {
 	private const val P_CALB = "calb"
 	private const val P_CTRK = "ctrk"
 	private const val P_DIR = "dir"
+	private const val P_ART = "fart"
+	private const val P_FALB = "falb"
 	
 	// builders
 	fun forRoot() = ROOT_ID
+	fun forArtist(key: String): String {
+		val encoded = java.util.Base64.getUrlEncoder().withoutPadding()
+			.encodeToString(key.toByteArray(Charsets.UTF_8))
+		return "$P_ART$SEP$encoded"
+	}
+	
+	fun forFolderAlbum(artistKey: String, albumKey: String): String {
+		val encoder = java.util.Base64.getUrlEncoder().withoutPadding()
+		val a = encoder.encodeToString(artistKey.toByteArray(Charsets.UTF_8))
+		val b = encoder.encodeToString(albumKey.toByteArray(Charsets.UTF_8))
+		return "$P_FALB$SEP$a$SEP$b"
+	}
 	fun forFoldersRoot() = FOLDERS_ROOT_ID
 	fun forFolder(relativePath: String): String {
 		val encoded = java.util.Base64.getUrlEncoder().withoutPadding()
@@ -57,6 +71,8 @@ object DocumentId {
 		object FoldersRoot : Type()
 		object CacheRoot : Type()
 		data class Folder(val path: String) : Type()
+		data class Artist(val key: String) : Type()
+		data class FolderAlbum(val artistKey: String, val albumKey: String) : Type()
 		data class Album(val albumId: UUID) : Type()
 		data class CacheAlbum(val albumId: UUID) : Type()
 		data class Track(
@@ -98,6 +114,21 @@ object DocumentId {
 				
 				P_CTRK -> parseTrack(rest)?.let {
 					Type.CacheTrack(it.albumId, it.trackId, it.sizeBytes, it.durationMs)
+				}
+				
+				P_ART -> Type.Artist(
+					String(java.util.Base64.getUrlDecoder().decode(rest), Charsets.UTF_8)
+				)
+				
+				P_FALB -> {
+					val parts = rest.split(SEP, limit = 2)
+					if (parts.size != 2) null else {
+						val decoder = java.util.Base64.getUrlDecoder()
+						Type.FolderAlbum(
+							String(decoder.decode(parts[0]), Charsets.UTF_8),
+							String(decoder.decode(parts[1]), Charsets.UTF_8)
+						)
+					}
 				}
 				
 				P_DIR -> Type.Folder(

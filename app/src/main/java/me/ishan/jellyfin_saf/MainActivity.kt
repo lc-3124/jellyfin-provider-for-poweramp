@@ -7,6 +7,7 @@ import android.os.StrictMode
 import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -39,6 +41,9 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -57,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
@@ -72,8 +78,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.ishan.jellyfin_saf.db.AppDatabase
-import me.ishan.jellyfin_saf.ui.theme.BrandBlue
-import me.ishan.jellyfin_saf.ui.theme.BrandPurple
+import me.ishan.jellyfin_saf.ui.theme.AppStyle
 import me.ishan.jellyfin_saf.ui.theme.JellyfinSaf
 
 class MainActivity : ComponentActivity() {
@@ -87,10 +92,23 @@ class MainActivity : ComponentActivity() {
 		super.onCreate(savedInstanceState)
 		enableEdgeToEdge()
 		setContent {
-			JellyfinSaf {
+			val uiPrefs = remember { getSharedPreferences("ui", Context.MODE_PRIVATE) }
+			val systemDark = isSystemInDarkTheme()
+			var style by remember {
+				mutableStateOf(
+					AppStyle.fromId(uiPrefs.getString("style", null))
+						?: if (systemDark) AppStyle.DARK_BLUE else AppStyle.LIGHT_BLUE
+				)
+			}
+			JellyfinSaf(style = style) {
 				Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
 					JellyfinSettings(
-						modifier = Modifier.padding(innerPadding)
+						modifier = Modifier.padding(innerPadding),
+						style = style,
+						onStyleChange = { selected ->
+							style = selected
+							uiPrefs.edit().putString("style", selected.id).apply()
+						}
 					)
 				}
 			}
@@ -100,7 +118,11 @@ class MainActivity : ComponentActivity() {
 
 @SuppressLint("DefaultLocale")
 @Composable
-fun JellyfinSettings(modifier: Modifier = Modifier) {
+fun JellyfinSettings(
+	modifier: Modifier = Modifier,
+	style: AppStyle = AppStyle.LIGHT_BLUE,
+	onStyleChange: (AppStyle) -> Unit = {}
+) {
 	val context = LocalContext.current
 	val manager = remember { JellyfinClientManager(context) }
 	val playbackManager = remember { TrackPlaybackManagerSingleton.getInstance(context) }
@@ -341,7 +363,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					modifier = Modifier
 						.fillMaxWidth()
 						.background(
-							Brush.linearGradient(listOf(BrandBlue, BrandPurple))
+							Brush.linearGradient(style.gradient)
 						)
 						.padding(horizontal = 18.dp, vertical = 16.dp)
 				) {
@@ -906,6 +928,8 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		AppInfoDialog(
 			t = t,
 			language = language,
+			style = style,
+			onStyleChange = onStyleChange,
 			onLanguageChange = { selected ->
 				language = selected
 				uiPrefs.edit().putString("language", selected.id).apply()
@@ -1116,12 +1140,25 @@ private fun CacheStatsTable(
 		)
 	) {
 		Column {
-			Text(
-				text = t.cachedTotal(formatGib(audioBytes), songs),
-				style = MaterialTheme.typography.titleMedium,
-				fontWeight = FontWeight.Bold,
-				modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
-			)
+			Row(
+				modifier = Modifier
+					.fillMaxWidth()
+					.padding(horizontal = 14.dp, vertical = 6.dp),
+				verticalAlignment = Alignment.CenterVertically
+			) {
+				Text(
+					text = t.cachedTotal(formatGib(audioBytes), songs),
+					style = MaterialTheme.typography.titleMedium,
+					fontWeight = FontWeight.Bold,
+					modifier = Modifier.weight(1f)
+				)
+				Icon(
+					imageVector = Icons.Filled.Refresh,
+					contentDescription = t.statsRefreshed,
+					tint = MaterialTheme.colorScheme.onSurfaceVariant,
+					modifier = Modifier.size(18.dp)
+				)
+			}
 			HorizontalDivider()
 			Row(
 				modifier = Modifier
@@ -1159,14 +1196,36 @@ private fun CacheStatsTable(
 			Row(
 				modifier = Modifier
 					.fillMaxWidth()
-					.padding(horizontal = 14.dp, vertical = 5.dp)
+					.padding(horizontal = 14.dp, vertical = 5.dp),
+				verticalAlignment = Alignment.CenterVertically
 			) {
-				Text(
-					text = t.favouritesLabel,
-					style = MaterialTheme.typography.bodyMedium,
-					modifier = Modifier.weight(1f)
-				)
-				Text(text = favouriteCount.toString(), style = MaterialTheme.typography.bodyMedium)
+				Row(
+					modifier = Modifier.weight(1f),
+					verticalAlignment = Alignment.CenterVertically
+				) {
+					Text(
+						text = t.favouritesLabel,
+						style = MaterialTheme.typography.bodyMedium
+					)
+					Spacer(modifier = Modifier.width(6.dp))
+					Text(
+						text = favouriteCount.toString(),
+						style = MaterialTheme.typography.bodyMedium,
+						color = MaterialTheme.colorScheme.primary
+					)
+				}
+				Row(verticalAlignment = Alignment.CenterVertically) {
+					Text(
+						text = t.partialLabel,
+						style = MaterialTheme.typography.bodySmall,
+						color = MaterialTheme.colorScheme.onSurfaceVariant
+					)
+					Spacer(modifier = Modifier.width(6.dp))
+					Text(
+						text = breakdown.partialSongsNum.toString(),
+						style = MaterialTheme.typography.bodyMedium
+					)
+				}
 			}
 			HorizontalDivider()
 			Row(
@@ -1191,9 +1250,46 @@ private fun CacheStatsTable(
 }
 
 @Composable
+private fun StyleSwatch(style: AppStyle, selected: Boolean, onClick: () -> Unit) {
+	val shape = RoundedCornerShape(12.dp)
+	val scheme = style.colorScheme
+	Box(
+		modifier = Modifier
+			.size(46.dp)
+			.clip(shape)
+			.background(scheme.background)
+			.border(
+				width = if (selected) 3.dp else 1.dp,
+				color = if (selected) MaterialTheme.colorScheme.onSurface
+				else MaterialTheme.colorScheme.outline,
+				shape = shape
+			)
+			.clickable(onClick = onClick)
+			.padding(6.dp)
+	) {
+		Row(
+			modifier = Modifier.fillMaxSize(),
+			horizontalArrangement = Arrangement.spacedBy(3.dp)
+		) {
+			listOf(scheme.primary, scheme.secondary, scheme.tertiary).forEach { color ->
+				Box(
+					modifier = Modifier
+						.weight(1f)
+						.fillMaxHeight()
+						.clip(RoundedCornerShape(4.dp))
+						.background(color)
+				)
+			}
+		}
+	}
+}
+
+@Composable
 private fun AppInfoDialog(
 	t: UiStrings,
 	language: AppLanguage,
+	style: AppStyle,
+	onStyleChange: (AppStyle) -> Unit,
 	onLanguageChange: (AppLanguage) -> Unit,
 	onDismiss: () -> Unit
 ) {
@@ -1222,6 +1318,22 @@ private fun AppInfoDialog(
 								AppLanguage.CHINESE -> t.chinese
 								AppLanguage.JAPANESE -> t.japanese
 							}
+						)
+					}
+				}
+				HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+				Text(t.pageStyle, style = MaterialTheme.typography.titleSmall)
+				Row(
+					modifier = Modifier
+						.fillMaxWidth()
+						.padding(top = 10.dp, bottom = 4.dp),
+					horizontalArrangement = Arrangement.spacedBy(12.dp)
+				) {
+					AppStyle.entries.forEach { option ->
+						StyleSwatch(
+							style = option,
+							selected = option == style,
+							onClick = { onStyleChange(option) }
 						)
 					}
 				}

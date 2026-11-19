@@ -20,8 +20,8 @@ android {
 		applicationId = "me.ishan.jellyfin_saf"
 		minSdk = 26
 		targetSdk = 36
-		versionName = "0.8.2"
-		versionCode = 32
+		versionName = "0.8.3"
+		versionCode = 33
 		
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 		
@@ -59,6 +59,7 @@ dependencies {
 	implementation(platform(libs.androidx.compose.bom))
 	implementation(libs.androidx.activity.compose)
 	implementation(libs.androidx.compose.material3)
+	implementation(libs.androidx.compose.material.icons.core)
 	implementation(libs.androidx.compose.ui)
 	implementation(libs.androidx.compose.ui.graphics)
 	implementation(libs.androidx.compose.ui.tooling.preview)

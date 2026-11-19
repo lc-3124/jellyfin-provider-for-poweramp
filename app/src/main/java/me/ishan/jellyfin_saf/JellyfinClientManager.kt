@@ -672,6 +672,8 @@ class JellyfinClientManager(private val context: Context? = null) {
 			append("&audioCodec=").append(quality.codec ?: "aac")
 			append("&audioBitrate=").append(bitrate)
 			append("&deviceId=").append(getDeviceId())
+			// 必须每次唯一，否则 Jellyfin 会复用同一条转码任务（换码率也会拿到旧输出）
+			append("&playSessionId=").append(java.util.UUID.randomUUID().toString())
 		}
 	}
 	

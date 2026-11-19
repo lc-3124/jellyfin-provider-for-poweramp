@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "jellyfin-saf"
+rootProject.name = "jellyfin-provider-for-poweramp"
 include(":app")

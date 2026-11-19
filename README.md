@@ -1,4 +1,4 @@
-# Jellyfin SAF Provider
+# Jellyfin Provider for Poweramp
 
 > ### Unofficial fork — read this first
 >

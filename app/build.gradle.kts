@@ -20,8 +20,8 @@ android {
 		applicationId = "me.ishan.jellyfin_saf"
 		minSdk = 26
 		targetSdk = 36
-		versionName = "0.5.0-preview"
-		versionCode = 23
+		versionName = "0.6.0"
+		versionCode = 24
 		
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 		

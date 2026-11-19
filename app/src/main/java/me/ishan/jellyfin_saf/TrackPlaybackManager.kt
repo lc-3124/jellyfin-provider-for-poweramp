@@ -498,6 +498,8 @@ class TrackPlaybackManager(
 	
 	fun getCachedTrack(trackId: UUID): File? = getCachedTrackInfo(trackId)?.file
 	
+	fun getTrackInfo(trackId: UUID): TrackEntity? = db.trackDao().getTrackById(trackId)
+	
 	private fun deleteCacheFiles(trackId: UUID) {
 		AudioQuality.entries.forEach { cacheFile(trackId, it).delete() }
 	}

@@ -16,6 +16,7 @@ object DocumentId {
 	private const val SEP = ";"
 	
 	const val ROOT_ID = "jellyfin_root"
+	const val FOLDERS_ROOT_ID = "jellyfin_folders_root"
 	const val CACHE_ROOT_ID = "jellyfin_cache_root"
 	
 	/** 服务器元数据里没有专辑的缓存歌曲，归到这个虚拟专辑。 */
@@ -28,9 +29,16 @@ object DocumentId {
 	private const val P_LYR = "lyr"
 	private const val P_CALB = "calb"
 	private const val P_CTRK = "ctrk"
+	private const val P_DIR = "dir"
 	
 	// builders
 	fun forRoot() = ROOT_ID
+	fun forFoldersRoot() = FOLDERS_ROOT_ID
+	fun forFolder(relativePath: String): String {
+		val encoded = java.util.Base64.getUrlEncoder().withoutPadding()
+			.encodeToString(relativePath.toByteArray(Charsets.UTF_8))
+		return "$P_DIR$SEP$encoded"
+	}
 	fun forCacheRoot() = CACHE_ROOT_ID
 	fun forAlbum(albumId: UUID) = "$P_ALB$SEP$albumId"
 	fun forTrack(albumId: UUID, trackId: UUID, sizeBytes: Long, durationMs: Long) =
@@ -46,7 +54,9 @@ object DocumentId {
 	// parsers
 	sealed class Type {
 		object Root : Type()
+		object FoldersRoot : Type()
 		object CacheRoot : Type()
+		data class Folder(val path: String) : Type()
 		data class Album(val albumId: UUID) : Type()
 		data class CacheAlbum(val albumId: UUID) : Type()
 		data class Track(
@@ -63,6 +73,7 @@ object DocumentId {
 	
 	fun parse(id: String): Type? {
 		if (id == ROOT_ID) return Type.Root
+		if (id == FOLDERS_ROOT_ID) return Type.FoldersRoot
 		if (id == CACHE_ROOT_ID) return Type.CacheRoot
 		
 		try {
@@ -88,6 +99,13 @@ object DocumentId {
 				P_CTRK -> parseTrack(rest)?.let {
 					Type.CacheTrack(it.albumId, it.trackId, it.sizeBytes, it.durationMs)
 				}
+				
+				P_DIR -> Type.Folder(
+					String(
+						java.util.Base64.getUrlDecoder().decode(rest),
+						Charsets.UTF_8
+					)
+				)
 				
 				else -> null
 			}

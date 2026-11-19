@@ -143,7 +143,17 @@ class JellyfinMusicProvider : DocumentsProvider() {
 			putIf(cols, Root.COLUMN_DOCUMENT_ID, ROOT_ID)
 		}
 		
-		// 2) 离线缓存：只列已完整下载的曲目，完全走本地数据库
+		// 2) 物理目录：按服务器上的文件路径还原，绕过标签聚合
+		result.newRow().apply {
+			putIf(cols, Root.COLUMN_ROOT_ID, DocumentId.FOLDERS_ROOT_ID)
+			putIf(cols, Root.COLUMN_MIME_TYPES, "audio/*")
+			putIf(cols, Root.COLUMN_FLAGS, Root.FLAG_SUPPORTS_IS_CHILD)
+			putIf(cols, Root.COLUMN_TITLE, "Jellyfin Folders")
+			putIf(cols, Root.COLUMN_SUMMARY, "Original folder structure from file paths")
+			putIf(cols, Root.COLUMN_DOCUMENT_ID, DocumentId.FOLDERS_ROOT_ID)
+		}
+		
+		// 3) 离线缓存：只列已完整下载的曲目，完全走本地数据库
 		val usableBytes = context?.filesDir?.usableSpace ?: 0L
 		result.newRow().apply {
 			putIf(cols, Root.COLUMN_ROOT_ID, CACHE_ROOT_ID)
@@ -172,6 +182,19 @@ class JellyfinMusicProvider : DocumentsProvider() {
 			is DocumentId.Type.Root -> addDirectory(
 				result, cols, ROOT_ID, "Jellyfin Music", Document.FLAG_DIR_PREFERS_GRID
 			)
+			
+			is DocumentId.Type.FoldersRoot -> addDirectory(
+				result, cols, DocumentId.FOLDERS_ROOT_ID, "Jellyfin Folders",
+				Document.FLAG_DIR_PREFERS_GRID
+			)
+			
+			is DocumentId.Type.Folder -> {
+				val name = documentId.path.substringAfterLast('/')
+					.ifBlank { "Jellyfin Folders" }
+				addDirectory(
+					result, cols, docId, name, Document.FLAG_DIR_PREFERS_GRID
+				)
+			}
 			
 			is DocumentId.Type.CacheRoot -> addDirectory(
 				result, cols, CACHE_ROOT_ID, "Jellyfin Cache",
@@ -276,6 +299,14 @@ class JellyfinMusicProvider : DocumentsProvider() {
 							)
 						}
 					}
+				}
+				
+				is DocumentId.Type.FoldersRoot -> {
+					addFolderChildren(result, cols, "")
+				}
+				
+				is DocumentId.Type.Folder -> {
+					addFolderChildren(result, cols, parentId.path)
 				}
 				
 				is DocumentId.Type.Album -> {
@@ -532,6 +563,9 @@ class JellyfinMusicProvider : DocumentsProvider() {
 		
 		return when (parentId) {
 			is DocumentId.Type.Root -> true
+			is DocumentId.Type.FoldersRoot -> docId is DocumentId.Type.Folder
+			is DocumentId.Type.Folder ->
+				docId is DocumentId.Type.Folder || docId is DocumentId.Type.Track
 			is DocumentId.Type.Album -> docId is DocumentId.Type.Track
 			is DocumentId.Type.CacheRoot -> docId is DocumentId.Type.CacheAlbum ||
 				docId is DocumentId.Type.CacheTrack
@@ -552,6 +586,43 @@ class JellyfinMusicProvider : DocumentsProvider() {
 	}
 	
 	// -------------------------------------------------------------- helpers --
+	
+	private fun addFolderChildren(cursor: MatrixCursor, cols: Set<String>, path: String) {
+		val ctx = context ?: return
+		val tree = FolderLibrary.get(ctx) ?: return
+		val node = tree.node(path) ?: return
+		
+		node.dirs.forEach { childPath ->
+			val child = tree.node(childPath) ?: return@forEach
+			cursor.newRow().apply {
+				putIf(cols, Document.COLUMN_DOCUMENT_ID, DocumentId.forFolder(childPath))
+				putIf(cols, Document.COLUMN_MIME_TYPE, Document.MIME_TYPE_DIR)
+				putIf(cols, Document.COLUMN_DISPLAY_NAME, child.name)
+				putIf(
+					cols, Document.COLUMN_SUMMARY,
+					"${child.dirs.size} folders · ${child.tracks.size} songs"
+				)
+				putIf(cols, Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_THUMBNAIL)
+			}
+		}
+		
+		node.tracks.forEach { ref ->
+			val metadata = playbackManager.getTrackInfo(ref.trackId)
+				?: runBlocking { jellyfinClient.getTrackMetadata(ref.trackId) }
+				?: return@forEach
+			val albumId = metadata.albumId ?: DocumentId.UNKNOWN_ALBUM_ID
+			val docId = DocumentId.forTrack(
+				albumId, metadata.id, metadata.size ?: 0L, metadata.duration ?: 0L
+			)
+			addTrackRow(
+				cursor, cols, docId, metadata,
+				size = metadata.size,
+				lastModified = metadata.lastFetched,
+				lyrics = null,
+				displayName = ref.fileName
+			)
+		}
+	}
 	
 	private fun addDirectory(
 		cursor: MatrixCursor,
@@ -575,12 +646,13 @@ class JellyfinMusicProvider : DocumentsProvider() {
 		track: TrackEntity,
 		size: Long?,
 		lastModified: Long?,
-		lyrics: TrackLyricsEntity?
+		lyrics: TrackLyricsEntity?,
+		displayName: String? = null
 	) {
 		cursor.newRow().apply {
 			putIf(cols, Document.COLUMN_DOCUMENT_ID, docId)
 			putIf(cols, Document.COLUMN_MIME_TYPE, track.mimeType ?: "audio/*")
-			putIf(cols, Document.COLUMN_DISPLAY_NAME, track.title)
+			putIf(cols, Document.COLUMN_DISPLAY_NAME, displayName ?: track.title)
 			putIf(cols, Document.COLUMN_SIZE, size)
 			putIf(cols, Document.COLUMN_LAST_MODIFIED, lastModified)
 			putIf(cols, Document.COLUMN_FLAGS, Document.FLAG_SUPPORTS_THUMBNAIL)

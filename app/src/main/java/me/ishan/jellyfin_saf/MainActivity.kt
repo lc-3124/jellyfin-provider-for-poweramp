@@ -142,9 +142,15 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					
 					// 扫描完成后把远端收藏增量写进 Poweramp（只增不减、不下载）
 					scope.launch(Dispatchers.IO) {
+						val indexed = FolderLibrary.rebuild(context, manager)
 						val pushed = PowerampSync.pushServerFavourites(context, manager)
-						if (pushed > 0) {
-							withContext(Dispatchers.Main) {
+						withContext(Dispatchers.Main) {
+							if (indexed > 0) {
+								Toast.makeText(
+									context, t.foldersIndexed(indexed), Toast.LENGTH_SHORT
+								).show()
+							}
+							if (pushed > 0) {
 								Toast.makeText(
 									context, t.pushedToPoweramp(pushed), Toast.LENGTH_LONG
 								).show()
@@ -172,6 +178,10 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 	
 	LaunchedEffect(Unit) {
 		scope.launch(Dispatchers.IO) {
+			// 目录树还没建过就补一次（不需要完整扫描）
+			if (manager.isAuthenticated() && FolderLibrary.get(context) == null) {
+				runCatching { FolderLibrary.rebuild(context, manager) }
+			}
 			val breakdown = playbackManager.getCacheSizeBreakdown()
 			val favourites = AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
 			withContext(Dispatchers.Main) {

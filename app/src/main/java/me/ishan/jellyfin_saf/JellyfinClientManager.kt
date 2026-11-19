@@ -269,6 +269,37 @@ class JellyfinClientManager(private val context: Context? = null) {
 			}
 		}
 	
+	/** 全部曲目的 (id, 服务器路径)，用于重建物理目录树。 */
+	suspend fun getAllTrackPaths(): List<Pair<UUID, String>> = withContext(Dispatchers.IO) {
+		val apiClient = getApiClient() ?: return@withContext emptyList()
+		val userId = currentUserId ?: return@withContext emptyList()
+		val result = ArrayList<Pair<UUID, String>>()
+		var start = 0
+		val pageSize = 500
+		try {
+			while (true) {
+				val page = apiClient.itemsApi.getItems(
+					userId = userId,
+					includeItemTypes = setOf(BaseItemKind.AUDIO),
+					recursive = true,
+					fields = setOf(ItemFields.PATH),
+					limit = pageSize,
+					startIndex = start
+				)
+				val items = page.content.items
+				items.forEach { item ->
+					val path = item.path ?: item.mediaSources?.firstOrNull()?.path
+					if (!path.isNullOrBlank()) result.add(item.id to path)
+				}
+				if (items.size < pageSize) break
+				start += pageSize
+			}
+		} catch (e: Exception) {
+			Log.e(TAG, "Failed to fetch track paths", e)
+		}
+		result
+	}
+	
 	/** 远端收藏的全部曲目 id（分页拉取）。 */
 	suspend fun getFavouriteTrackIds(): List<UUID> = withContext(Dispatchers.IO) {
 		val apiClient = getApiClient() ?: return@withContext emptyList()

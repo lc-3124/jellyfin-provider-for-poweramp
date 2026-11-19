@@ -10,7 +10,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -22,6 +27,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.animation.AnimatedVisibility
@@ -48,17 +55,25 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.ishan.jellyfin_saf.db.AppDatabase
+import me.ishan.jellyfin_saf.ui.theme.BrandBlue
+import me.ishan.jellyfin_saf.ui.theme.BrandPurple
 import me.ishan.jellyfin_saf.ui.theme.JellyfinSaf
 
 class MainActivity : ComponentActivity() {
@@ -298,108 +313,114 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		Row(
 			modifier = Modifier
 				.fillMaxWidth()
-				.padding(top = 16.dp, bottom = 16.dp),
-			verticalAlignment = Alignment.Top
+				.padding(top = 12.dp, bottom = 8.dp),
+			verticalAlignment = Alignment.CenterVertically
 		) {
-			Text(
+			FitTitle(
 				text = t.brand,
-				style = MaterialTheme.typography.titleLarge,
-				maxLines = 1,
-				overflow = TextOverflow.Ellipsis,
-				modifier = Modifier.weight(1f)
+				modifier = Modifier
+					.weight(1f)
+					.padding(end = 16.dp)
 			)
-			TextButton(onClick = { showInfo = true }) {
-				Text(text = "ⓘ", style = MaterialTheme.typography.headlineSmall)
+			TextButton(
+				onClick = { showInfo = true },
+				modifier = Modifier.size(40.dp),
+				contentPadding = PaddingValues(0.dp)
+			) {
+				Text(text = "ⓘ", style = MaterialTheme.typography.titleLarge)
 			}
 		}
 		
 		if (isAuthenticated) {
 			Card(
-				modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(
-					containerColor = MaterialTheme.colorScheme.primaryContainer
-				)
+				modifier = Modifier.fillMaxWidth(),
+				shape = RoundedCornerShape(24.dp),
+				colors = CardDefaults.cardColors(containerColor = Color.Transparent)
 			) {
 				Column(
-					modifier = Modifier.padding(16.dp),
+					modifier = Modifier
+						.fillMaxWidth()
+						.background(
+							Brush.linearGradient(listOf(BrandBlue, BrandPurple))
+						)
+						.padding(horizontal = 18.dp, vertical = 16.dp)
 				) {
-					Text(
-						text = "✓ " + t.connected,
-						style = MaterialTheme.typography.titleLarge,
-						color = MaterialTheme.colorScheme.primary
-					)
-					Text(
-						text = "${t.user}: ${manager.getUsername()}",
-						style = MaterialTheme.typography.bodyMedium,
-						modifier = Modifier.padding(top = 6.dp)
-					)
-					Text(
-						text = manager.getUrl(),
-						style = MaterialTheme.typography.bodySmall,
-						color = MaterialTheme.colorScheme.onSurfaceVariant
-					)
-					
-					Row(
-						modifier = Modifier
-							.fillMaxWidth()
-							.padding(top = 8.dp),
-						verticalAlignment = Alignment.CenterVertically
-					) {
-						TextButton(
-							onClick = {
-								scope.launch {
-									manager.logout()
-									// 不在 SharedPreferences 里留明文密码
-									manager.clearStoredPassword()
-									password = ""
-									latencyMs = null
-									latencyFailed = false
-									isAuthenticated = false
-								}
-							},
-							contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp)
-						) {
+					Row(verticalAlignment = Alignment.Top) {
+						Column(modifier = Modifier.weight(1f)) {
 							Text(
-								text = t.logout,
-								color = MaterialTheme.colorScheme.error
+								text = "✓ " + t.connected,
+								style = MaterialTheme.typography.titleLarge,
+								fontWeight = FontWeight.SemiBold,
+								color = Color.White
+							)
+							Text(
+								text = "${t.user}: ${manager.getUsername()}",
+								style = MaterialTheme.typography.bodyMedium,
+								color = Color.White.copy(alpha = 0.85f),
+								modifier = Modifier.padding(top = 4.dp)
+							)
+							Text(
+								text = manager.getUrl(),
+								style = MaterialTheme.typography.bodySmall,
+								color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
 							)
 						}
-						Spacer(modifier = Modifier.width(16.dp))
-						OutlinedButton(
-							onClick = {
-								isTestingLatency = true
-								latencyFailed = false
-								scope.launch {
-									val ms = manager.measureLatency()
-									isTestingLatency = false
-									latencyMs = ms
-									latencyFailed = ms == null
-								}
-							},
-							enabled = !isTestingLatency,
-							contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-						) {
-							if (isTestingLatency) {
-								CircularProgressIndicator(
-									modifier = Modifier.size(14.dp),
-									strokeWidth = 2.dp
+						
+						Column(horizontalAlignment = Alignment.End) {
+							TextButton(
+								onClick = {
+									scope.launch {
+										manager.logout()
+										// 不在 SharedPreferences 里留明文密码
+										manager.clearStoredPassword()
+										password = ""
+										latencyMs = null
+										latencyFailed = false
+										isAuthenticated = false
+									}
+								},
+								contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+							) {
+								Text(
+									text = t.logout,
+									style = MaterialTheme.typography.labelLarge,
+									color = Color.White
 								)
-							} else {
-								Text(t.speedTest, style = MaterialTheme.typography.labelLarge)
 							}
-						}
-						Spacer(modifier = Modifier.weight(1f))
-						when {
-							isTestingLatency -> Unit
-							latencyFailed -> Text(
-								text = t.offline,
-								style = MaterialTheme.typography.bodyMedium,
-								color = MaterialTheme.colorScheme.error
-							)
-							latencyMs != null -> Text(
-								text = t.latencyText(latencyMs!!),
-								style = MaterialTheme.typography.bodyMedium,
-								color = MaterialTheme.colorScheme.primary
-							)
+							OutlinedButton(
+								onClick = {
+									isTestingLatency = true
+									latencyFailed = false
+									scope.launch {
+										val ms = manager.measureLatency()
+										isTestingLatency = false
+										latencyMs = ms
+										latencyFailed = ms == null
+										Toast.makeText(
+											context,
+											if (ms == null) t.offline else t.latencyToast(ms),
+											Toast.LENGTH_SHORT
+										).show()
+									}
+								},
+								enabled = !isTestingLatency,
+								contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
+								border = BorderStroke(1.dp, Color.White.copy(alpha = 0.65f)),
+								colors = ButtonDefaults.outlinedButtonColors(
+									contentColor = Color.White
+								)
+							) {
+								if (isTestingLatency) {
+									CircularProgressIndicator(
+										modifier = Modifier.size(12.dp),
+										strokeWidth = 2.dp,
+										color = Color.White
+									)
+								} else {
+									Text(t.speedTest, style = MaterialTheme.typography.labelMedium)
+								}
+							}
+
 						}
 					}
 				}
@@ -540,6 +561,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 				Text(
 			text = t.audioQuality,
 			style = MaterialTheme.typography.titleSmall,
+			color = MaterialTheme.colorScheme.primary,
 			modifier = Modifier.align(Alignment.Start)
 		)
 		Spacer(modifier = Modifier.height(6.dp))
@@ -592,22 +614,43 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		
 		Spacer(modifier = Modifier.height(12.dp))
 		
-		OutlinedTextField(
-			value = maxCacheSize,
-			onValueChange = {
-				if (it.isEmpty() || it.all { char -> char.isDigit() }) {
-					maxCacheSize = it
-					it.toLongOrNull()?.let { size ->
-						manager.setMaxCacheSize(size)
-						playbackManager.setMaxCacheSizeMB(size)
+		Row(
+			modifier = Modifier
+				.fillMaxWidth()
+				.padding(top = 4.dp),
+			verticalAlignment = Alignment.CenterVertically
+		) {
+			Text(
+				text = t.maxCacheSize,
+				style = MaterialTheme.typography.bodyMedium,
+				modifier = Modifier.weight(1f)
+			)
+			BasicTextField(
+				value = maxCacheSize,
+				onValueChange = {
+					if (it.isEmpty() || it.all { char -> char.isDigit() }) {
+						maxCacheSize = it
+						it.toLongOrNull()?.let { size ->
+							manager.setMaxCacheSize(size)
+							playbackManager.setMaxCacheSizeMB(size)
+						}
 					}
-				}
-			},
-			label = { Text(t.maxCacheSize) },
-			modifier = Modifier.fillMaxWidth(),
-			keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-			singleLine = true
-		)
+				},
+				singleLine = true,
+				textStyle = MaterialTheme.typography.bodyMedium.copy(
+					color = MaterialTheme.colorScheme.onSurface
+				),
+				keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+				modifier = Modifier
+					.width(150.dp)
+					.border(
+						1.dp,
+						MaterialTheme.colorScheme.outline,
+						RoundedCornerShape(10.dp)
+					)
+					.padding(horizontal = 12.dp, vertical = 9.dp)
+			)
+		}
 		
 		Spacer(modifier = Modifier.height(16.dp))
 		
@@ -938,6 +981,30 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 	}
 }
 
+/** 标题自动缩放，保证一行显示完整（不省略）。 */
+@Composable
+private fun FitTitle(text: String, modifier: Modifier = Modifier) {
+	val measurer = rememberTextMeasurer()
+	BoxWithConstraints(modifier) {
+		// 留一点余量，避免和右上角按钮贴住
+		val available = (constraints.maxWidth - 24).coerceAtLeast(1)
+		val probe = measurer.measure(
+			text = AnnotatedString(text),
+			style = TextStyle(fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+		)
+		val scale = if (probe.size.width > 0) available.toFloat() / probe.size.width else 1f
+		val resolved = (24f * scale * 0.98f).coerceIn(11f, 22f)
+		Text(
+			text = text,
+			fontSize = resolved.sp,
+			fontWeight = FontWeight.SemiBold,
+			maxLines = 1,
+			softWrap = false,
+			color = MaterialTheme.colorScheme.onSurface
+		)
+	}
+}
+
 @Composable
 private fun EntryCard(
 	title: String,
@@ -1053,13 +1120,13 @@ private fun CacheStatsTable(
 				text = t.cachedTotal(formatGib(audioBytes), songs),
 				style = MaterialTheme.typography.titleMedium,
 				fontWeight = FontWeight.Bold,
-				modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+				modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
 			)
 			HorizontalDivider()
 			Row(
 				modifier = Modifier
 					.fillMaxWidth()
-					.padding(vertical = 8.dp)
+					.padding(vertical = 6.dp)
 			) {
 				listOf(AudioQuality.LOSSLESS, AudioQuality.MEDIUM, AudioQuality.LOW).forEach { q ->
 					Column(
@@ -1069,7 +1136,12 @@ private fun CacheStatsTable(
 						Text(
 							text = (breakdown.qualityCounts[q] ?: 0).toString(),
 							style = MaterialTheme.typography.titleMedium,
-							fontWeight = FontWeight.SemiBold
+							fontWeight = FontWeight.SemiBold,
+							color = when (q) {
+								AudioQuality.LOSSLESS -> MaterialTheme.colorScheme.primary
+								AudioQuality.MEDIUM -> MaterialTheme.colorScheme.tertiary
+								AudioQuality.LOW -> MaterialTheme.colorScheme.secondary
+							}
 						)
 						Text(
 							text = when (q) {
@@ -1087,7 +1159,7 @@ private fun CacheStatsTable(
 			Row(
 				modifier = Modifier
 					.fillMaxWidth()
-					.padding(horizontal = 14.dp, vertical = 7.dp)
+					.padding(horizontal = 14.dp, vertical = 5.dp)
 			) {
 				Text(
 					text = t.favouritesLabel,
@@ -1100,7 +1172,7 @@ private fun CacheStatsTable(
 			Row(
 				modifier = Modifier
 					.fillMaxWidth()
-					.padding(horizontal = 14.dp, vertical = 7.dp)
+					.padding(horizontal = 14.dp, vertical = 5.dp)
 			) {
 				Text(
 					text = "${t.artwork} ${formatMb(breakdown.albumArtsSize)}",

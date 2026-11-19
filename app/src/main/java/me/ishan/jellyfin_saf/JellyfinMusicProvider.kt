@@ -208,9 +208,15 @@ class JellyfinMusicProvider : DocumentsProvider() {
 					}
 					val metadata = meta ?: return result
 					val cached = playbackManager.getCachedTrackInfo(documentId.trackId)
+					val reportedSize = cached?.sizeBytes
+						?: if (jellyfinClient.getQuality() != AudioQuality.LOSSLESS) {
+							playbackManager.estimateTranscodedSize(
+								documentId.durationMs, jellyfinClient.getQuality()
+							)
+						} else null
 					addTrackRow(
 						result, cols, docId, metadata,
-						size = cached?.sizeBytes ?: metadata.size ?: documentId.sizeBytes,
+						size = reportedSize ?: metadata.size ?: documentId.sizeBytes,
 						lastModified = metadata.lastFetched,
 						lyrics = lyrics
 					)
@@ -386,22 +392,23 @@ class JellyfinMusicProvider : DocumentsProvider() {
 					return ParcelFileDescriptor.open(cached.file, ParcelFileDescriptor.MODE_READ_ONLY)
 				}
 				
-				// 2) 需要转码档：整轨下载完再播（几 MB，可接受）
+				// 2) 需要转码档：立刻返回 ProxyFD，后台边下边写，绝不阻塞 openDocument
 				if (quality != AudioQuality.LOSSLESS) {
-					val downloaded = runBlocking {
-						playbackManager.getOrDownloadTranscoded(
-							documentId.trackId, quality, documentId.durationMs, jellyfinClient
-						)
+					val stream = playbackManager.openTranscodedStream(
+						documentId.trackId, quality, documentId.durationMs, jellyfinClient
+					)
+					if (stream != null) {
+						Log.d(TAG, "[${documentId.trackId}] Streaming transcode $quality")
+						signal?.setOnCancelListener { stream.close() }
+						if (signal?.isCanceled == true) {
+							stream.close()
+							throw OperationCanceledException("received cancellation signal")
+						}
+						return openViaProxyFdForTranscode(stream)
 					}
-					if (downloaded != null) {
-						Log.d(TAG, "[${documentId.trackId}] Transcoded $quality ready")
-						return ParcelFileDescriptor.open(
-							downloaded, ParcelFileDescriptor.MODE_READ_ONLY
-						)
-					}
-					// 下载失败：有旧缓存就先播旧缓存
+					// 无法开始转码：有旧缓存就先播旧缓存
 					cached?.let {
-						Log.w(TAG, "[${documentId.trackId}] Transcode failed, falling back to cache")
+						Log.w(TAG, "[${documentId.trackId}] Transcode unavailable, using cache")
 						return ParcelFileDescriptor.open(it.file, ParcelFileDescriptor.MODE_READ_ONLY)
 					}
 				}
@@ -459,6 +466,27 @@ class JellyfinMusicProvider : DocumentsProvider() {
 				override fun onRelease() {
 					Log.d(TAG, "[${documentId.trackId}] ProxyFD released")
 					trackStream.close()
+				}
+			}, handler
+		)
+	}
+	
+	private fun openViaProxyFdForTranscode(stream: TranscodeStream): ParcelFileDescriptor {
+		val storageManager =
+			context?.getSystemService(android.content.Context.STORAGE_SERVICE) as StorageManager
+		val index = nextHandlerIndex.getAndIncrement() % proxyHandlers.size
+		val handler = proxyHandlers[index]
+		
+		return storageManager.openProxyFileDescriptor(
+			ParcelFileDescriptor.MODE_READ_ONLY, object : ProxyFileDescriptorCallback() {
+				override fun onGetSize(): Long = stream.totalSize
+				
+				override fun onRead(offset: Long, size: Int, data: ByteArray): Int =
+					stream.read(data, offset, size)
+				
+				override fun onRelease() {
+					Log.d(TAG, "[${stream.trackId}] Transcode FD released")
+					stream.close()
 				}
 			}, handler
 		)

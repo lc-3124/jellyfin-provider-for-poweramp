@@ -345,6 +345,7 @@ class TrackPlaybackManager(
 ) {
 	private val activeTracks = ConcurrentHashMap<UUID, SharedTrackState>()
 	private val downloadMutexes = ConcurrentHashMap<UUID, Mutex>()
+	private val transcodeStreams = ConcurrentHashMap<UUID, TranscodeStream>()
 	
 	fun setMaxCacheSizeMB(sizeMB: Long) {
 		maxCacheSizeMB = sizeMB
@@ -501,38 +502,98 @@ class TrackPlaybackManager(
 		AudioQuality.entries.forEach { cacheFile(trackId, it).delete() }
 	}
 
+	/** 估算转码后的字节数，用于 ProxyFD 的总长度。 */
+	fun estimateTranscodedSize(durationMs: Long, quality: AudioQuality): Long? {
+		val bitrate = quality.bitrate ?: return null
+		if (durationMs <= 0L) return null
+		val bytes = bitrate.toLong() * durationMs / 8000L
+		// 留 2% + 一个头的余量，宁可略大（读到真实 EOF 自然结束）
+		return bytes + bytes / 50 + 16 * 1024
+	}
+	
 	/**
-	 * 转码档的“先下后播”：整轨下载完成才返回文件。
-	 * 失败返回 null，由调用方回退到旧缓存或无损流。
+	 * 转码档的边下边播：立刻返回句柄，后台下载写入 .part，
+	 * 播放器读到哪里就阻塞到哪里的数据落盘。
 	 */
-	suspend fun getOrDownloadTranscoded(
+	fun openTranscodedStream(
 		trackId: UUID,
 		quality: AudioQuality,
 		durationMs: Long,
 		client: JellyfinClientManager
-	): File? = withContext(Dispatchers.IO) {
-		if (quality == AudioQuality.LOSSLESS) return@withContext null
+	): TranscodeStream? {
+		if (quality == AudioQuality.LOSSLESS) return null
+		val totalSize = estimateTranscodedSize(durationMs, quality) ?: return null
 		
-		val cached = getCachedTrackInfo(trackId)
-		if (cached != null && cached.quality.rank >= quality.rank) {
-			return@withContext cached.file
+		transcodeStreams[trackId]?.let { existing ->
+			if (!existing.isClosed()) return existing
 		}
 		
-		// 同一首歌并发打开时只下载一次
-		val mutex = downloadMutexes.getOrPut(trackId) { Mutex() }
-		mutex.withLock {
-			val again = getCachedTrackInfo(trackId)
-			if (again != null && again.quality.rank >= quality.rank) {
-				return@withLock again.file
+		val target = cacheFile(trackId, quality)
+		val tmp = File(target.parentFile, target.name + ".part")
+		tmp.delete()
+		val writer = try {
+			FileChannel.open(
+				tmp.toPath(),
+				StandardOpenOption.WRITE,
+				StandardOpenOption.CREATE,
+				StandardOpenOption.TRUNCATE_EXISTING
+			)
+		} catch (e: Exception) {
+			Log.w(TAG, "[$trackId] Cannot create transcode temp file", e)
+			return null
+		}
+		
+		val stream = TranscodeStream(trackId, tmp, totalSize)
+		transcodeStreams[trackId] = stream
+		
+		scope.launch(Dispatchers.IO) {
+			val ok = client.downloadTrack(
+				trackId = trackId,
+				outputFile = writer,
+				byteOffset = 0L,
+				byteLength = null,
+				quality = quality,
+				onProgress = { position -> stream.onProgress(position) }
+			)
+			try {
+				writer.close()
+			} catch (_: Exception) {
 			}
-			if (downloadWholeTrack(trackId, quality, durationMs, client)) {
-				val file = cacheFile(trackId, quality)
-				prefetchAlbumArt(trackId, client)
-				file
+			
+			val size = if (tmp.exists()) tmp.length() else 0L
+			if (ok && size > 0L) {
+				target.delete()
+				if (tmp.renameTo(target)) {
+					val totalChunks =
+						((size + TrackStateEntity.CHUNK_SIZE - 1) / TrackStateEntity.CHUNK_SIZE).toInt()
+					db.trackDao().insertTrackState(
+						TrackStateEntity(
+							id = trackId,
+							state = ContentState.COMPLETE,
+							chunks = BitSet().apply { set(0, totalChunks) },
+							sizeBytes = size,
+							durationMs = durationMs
+						)
+					)
+					target.setLastModified(System.currentTimeMillis())
+					AudioQuality.entries.filter { it != quality }
+						.forEach { cacheFile(trackId, it).delete() }
+					prefetchAlbumArt(trackId, client)
+					scheduleEviction()
+					Log.i(TAG, "[$trackId] Transcoded $quality cached ($size bytes)")
+					stream.onFinished(true)
+				} else {
+					tmp.delete()
+					stream.onFinished(false)
+				}
 			} else {
-				null
+				tmp.delete()
+				stream.onFinished(false)
 			}
+			transcodeStreams.remove(trackId, stream)
 		}
+		
+		return stream
 	}
 	
 	/** 完整下载一首歌（任意档位）到缓存，成功则原子替换同曲目的其它档位。 */

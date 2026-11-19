@@ -563,7 +563,9 @@ class JellyfinMusicProvider : DocumentsProvider() {
 		
 		return when (parentId) {
 			is DocumentId.Type.Root -> true
-			is DocumentId.Type.FoldersRoot -> docId is DocumentId.Type.Folder
+			// 目录根下面既有子目录，也可能直接有曲目（库根目录的文件）
+			is DocumentId.Type.FoldersRoot ->
+				docId is DocumentId.Type.Folder || docId is DocumentId.Type.Track
 			is DocumentId.Type.Folder ->
 				docId is DocumentId.Type.Folder || docId is DocumentId.Type.Track
 			is DocumentId.Type.Album -> docId is DocumentId.Type.Track

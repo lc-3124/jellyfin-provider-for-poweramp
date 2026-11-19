@@ -42,9 +42,11 @@
 
 - **两种 SAF 根目录**：在线库支持边下边播；离线库只暴露已下完整、纯本地读取的曲目。
 - **三档音质**：无损 / 中等（AAC 128k）/ 低（AAC 64k）。可以在线转码播放，也可以只用于离线下载。
-- **收藏双向同步**（依赖 Poweramp 的 content provider）：
-  - 扫描资料库时，把 Jellyfin 的收藏**增量**写入 Poweramp（只增不减、不下载）；
-  - 手动点“同步 Poweramp 点赞”时，把 Poweramp 的喜欢**镜像**回 Jellyfin，并下载收藏曲目。
+- **收藏双向同步**（依赖 Poweramp 的 content provider）：“同步点赞”是可展开入口，分两个方向：
+  - **拉取**：把 Jellyfin 的收藏**增量**写入 Poweramp（只增不减、不下载）；
+  - **推送**：先弹确认框列出将新增/取消的数量，确认后才把 Poweramp 的喜欢**镜像**回 Jellyfin，
+    并下载收藏曲目。
+  - 扫描资料库不再自动同步收藏。
 - **完整的元数据**：标题、艺术家、专辑艺术家、年份、音轨/碟号、流派、收藏标记、歌词（含 LRC
   时间轴）、封面，全部通过 SAF 游标提供给播放器，离线库同样可用。
 - **缓存管理**：自动按最近最少使用淘汰、补全未完成的下载、按档位统计、可展开的删除区域。
@@ -95,16 +97,20 @@ Poweramp ── SAF (content://) ──> JellyfinMusicProvider (DocumentsProvide
 
 ## 收藏同步
 
-**扫描资料库（Jellyfin → Poweramp）**
+“同步点赞”是可展开入口，两个方向都要手动触发；**扫描资料库不会再自动拉取**。
+
+**拉取（Jellyfin → Poweramp）**
 
 - 拉取远端全部收藏，逐首把 Poweramp 里 `rating == 0` 的写成 5；
+- 增量：已在 `poweramp_pushed.json` 中记录过、之后被你在 Poweramp 里取消的曲目不会强行加回；
 - 只增不减、不下载、不覆盖已有的 1–5 评分。
 
-**手动同步（Poweramp → Jellyfin）**
+**推送（Poweramp → Jellyfin，执行前确认）**
 
-- Poweramp 里 `rating` 为 1–5 的曲目，全部设为 Jellyfin 收藏；
+- 点击后先计算差异并弹确认框：将新增 X 首、取消 Y 首；没有变化时只提示“已经一致”；
+- 确认后，Poweramp 里 `rating` 为 1–5 的曲目全部设为 Jellyfin 收藏；
 - Jellyfin 已收藏、但 Poweramp 未喜欢且 Poweramp 曲库中存在的曲目，取消收藏；
-- 同步完成后按当前音质下载收藏曲目。
+- 完成后按当前音质下载收藏曲目。
 
 > 写入 Poweramp 使用的是它**未公开**的 content provider（`com.maxmpz.audioplayer.data/files`），
 > 已在 Poweramp build 1035 上验证可读写；未来版本可能变化，应用会逐条校验并在失败时停止。

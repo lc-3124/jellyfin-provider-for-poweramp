@@ -108,6 +108,9 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 	var completeProgress by remember { mutableStateOf("") }
 	var isSyncing by remember { mutableStateOf(false) }
 	var syncProgress by remember { mutableStateOf("") }
+	var showSyncMenu by remember { mutableStateOf(false) }
+	var isPlanningPush by remember { mutableStateOf(false) }
+	var pendingPush by remember { mutableStateOf<PowerampSync.PushPlan?>(null) }
 	var favouriteCount by remember { mutableStateOf(0) }
 	var quality by remember { mutableStateOf(manager.getQuality()) }
 	var showDeleteMenu by remember { mutableStateOf(false) }
@@ -140,19 +143,13 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					Toast.makeText(context, scanProgress, Toast.LENGTH_LONG).show()
 					isScanning = false
 					
-					// 扫描完成后把远端收藏增量写进 Poweramp（只增不减、不下载）
+					// 扫描完成后只重建目录树；收藏同步（拉取/推送）改为手动入口
 					scope.launch(Dispatchers.IO) {
 						val indexed = FolderLibrary.rebuild(context, manager)
-						val pushed = PowerampSync.pushServerFavourites(context, manager)
 						withContext(Dispatchers.Main) {
 							if (indexed > 0) {
 								Toast.makeText(
 									context, t.foldersIndexed(indexed), Toast.LENGTH_SHORT
-								).show()
-							}
-							if (pushed > 0) {
-								Toast.makeText(
-									context, t.pushedToPoweramp(pushed), Toast.LENGTH_LONG
 								).show()
 							}
 						}
@@ -172,6 +169,80 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					Toast.makeText(context, scanProgress, Toast.LENGTH_LONG).show()
 					isScanning = false
 				}
+			}
+		}
+	}
+	
+	// 拉取：Jellyfin 收藏 → Poweramp（增量、只增不减、不下载）
+	val startPull: () -> Unit = {
+		isSyncing = true
+		syncProgress = t.readingJellyfin
+		scope.launch {
+			val result = withContext(Dispatchers.IO) {
+				PowerampSync.pullRemoteFavourites(context, manager)
+			}
+			isSyncing = false
+			val message = when {
+				result.needsPermission -> t.grantAccess
+				result.error != null -> t.syncFailed(result.error ?: "")
+				result.written > 0 -> t.pushedToPoweramp(result.written)
+				else -> t.pullUpToDate
+			}
+			Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+		}
+	}
+	
+	// 推送第一步：只算计划，弹确认框
+	val startPush: () -> Unit = {
+		isPlanningPush = true
+		syncProgress = t.readingPoweramp
+		scope.launch {
+			val plan = withContext(Dispatchers.IO) { PowerampSync.planPush(context, manager) }
+			isPlanningPush = false
+			if (plan == null) {
+				Toast.makeText(context, t.grantAccess, Toast.LENGTH_LONG).show()
+			} else {
+				pendingPush = plan
+			}
+		}
+	}
+	
+	// 推送第二步：用户确认后才增减 Jellyfin 收藏，然后下载收藏曲目
+	val runPush: (PowerampSync.PushPlan) -> Unit = { plan ->
+		isSyncing = true
+		syncProgress = t.syncing
+		scope.launch {
+			val result = withContext(Dispatchers.IO) {
+				PowerampSync.applyPush(context, manager, plan)
+			}
+			if (result.error != null) {
+				isSyncing = false
+				Toast.makeText(
+					context, t.syncFailed(result.error ?: ""), Toast.LENGTH_LONG
+				).show()
+			} else {
+				syncProgress = t.syncedDownloading(result.added + result.removed)
+				val dl = playbackManager.downloadFavouriteTracks(
+					manager, manager.getQuality()
+				) { done, total, title ->
+					withContext(Dispatchers.Main) {
+						syncProgress = t.downloadingProgress(done, total, title)
+					}
+				}
+				val breakdown = withContext(Dispatchers.IO) {
+					playbackManager.getCacheSizeBreakdown()
+				}
+				val favourites = withContext(Dispatchers.IO) {
+					AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
+				}
+				cacheBreakdown = breakdown
+				favouriteCount = favourites
+				isSyncing = false
+				Toast.makeText(
+					context,
+					t.mirrorSummary(result.added, result.removed, dl.downloaded, dl.failed),
+					Toast.LENGTH_LONG
+				).show()
 			}
 		}
 	}
@@ -569,58 +640,75 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		
 		Spacer(modifier = Modifier.height(8.dp))
 		
-		// Poweramp 点赞 -> Jellyfin 收藏，然后主动把这些收藏下完整
-		Button(
-			onClick = {
-				isSyncing = true
-				syncProgress = t.readingPoweramp
-				scope.launch {
-					val result = PowerampSync.mirrorToJellyfin(context, manager)
-					if (result.needsPermission) {
-						isSyncing = false
-						Toast.makeText(context, t.grantAccess, Toast.LENGTH_LONG).show()
-						return@launch
-					}
-					if (result.error != null) {
-						isSyncing = false
-						Toast.makeText(
-							context, t.syncFailed(result.error ?: ""), Toast.LENGTH_LONG
-						).show()
-						return@launch
-					}
-					syncProgress = t.syncedDownloading(result.total)
-					val dl = playbackManager.downloadFavouriteTracks(manager, manager.getQuality()) { done, total, title ->
-						withContext(Dispatchers.Main) {
-							syncProgress = t.downloadingProgress(done, total, title)
-						}
-					}
-					val breakdown = withContext(Dispatchers.IO) {
-						playbackManager.getCacheSizeBreakdown()
-					}
-					cacheBreakdown = breakdown
-					favouriteCount = withContext(Dispatchers.IO) {
-						AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
-					}
-					isSyncing = false
-					Toast.makeText(
-						context,
-						t.mirrorSummary(result.added, result.removed, dl.downloaded, dl.failed),
-						Toast.LENGTH_LONG
-					).show()
-				}
-			},
+		// 同步点赞：入口在这里，点开才是“推送 / 拉取”
+		Card(
 			modifier = Modifier.fillMaxWidth(),
-			enabled = !isSyncing && !isCompleting && !isEvicting && isAuthenticated,
-			colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+			colors = CardDefaults.cardColors(
+				containerColor = MaterialTheme.colorScheme.surfaceVariant
+			)
 		) {
-			if (isSyncing) {
-				CircularProgressIndicator(
-					modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onPrimary
-				)
-				Spacer(modifier = Modifier.width(8.dp))
-				Text(syncProgress.ifBlank { t.syncing }, maxLines = 1)
-			} else {
-				Text(t.syncLikes)
+			Column {
+				Row(
+					modifier = Modifier
+						.fillMaxWidth()
+						.clickable(enabled = !isSyncing && !isPlanningPush) {
+							showSyncMenu = !showSyncMenu
+						}
+						.padding(horizontal = 16.dp, vertical = 14.dp),
+					verticalAlignment = Alignment.CenterVertically
+				) {
+					Text(
+						text = t.syncLikes,
+						style = MaterialTheme.typography.titleMedium
+					)
+					Spacer(modifier = Modifier.weight(1f))
+					if (isSyncing || isPlanningPush) {
+						CircularProgressIndicator(
+							modifier = Modifier.size(18.dp),
+							strokeWidth = 2.dp
+						)
+					} else {
+						Text(
+							text = if (showSyncMenu) "▴" else "▾",
+							style = MaterialTheme.typography.titleMedium,
+							color = MaterialTheme.colorScheme.onSurfaceVariant
+						)
+					}
+				}
+				
+				AnimatedVisibility(visible = showSyncMenu) {
+					Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+						MenuOption(
+							title = t.push,
+							subtitle = t.pushDesc,
+							enabled = !isSyncing && !isPlanningPush && isAuthenticated,
+							onClick = {
+								showSyncMenu = false
+								startPush()
+							}
+						)
+						HorizontalDivider()
+						MenuOption(
+							title = t.pull,
+							subtitle = t.pullDesc,
+							enabled = !isSyncing && !isPlanningPush && isAuthenticated,
+							onClick = {
+								showSyncMenu = false
+								startPull()
+							}
+						)
+					}
+				}
+				
+				if (isSyncing || isPlanningPush) {
+					Text(
+						text = syncProgress.ifBlank { t.syncing },
+						style = MaterialTheme.typography.bodySmall,
+						color = MaterialTheme.colorScheme.onSurfaceVariant,
+						maxLines = 2,
+						modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+					)
+				}
 			}
 		}
 		
@@ -656,7 +744,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 				
 				AnimatedVisibility(visible = showDeleteMenu) {
 					Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-						DeleteOption(
+						MenuOption(
 							title = t.trim,
 							subtitle = t.trimDesc,
 							onClick = {
@@ -677,7 +765,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 							}
 						)
 						HorizontalDivider()
-						DeleteOption(
+						MenuOption(
 							title = t.unfinished,
 							subtitle = t.unfinishedDesc,
 							onClick = {
@@ -697,7 +785,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 							}
 						)
 						HorizontalDivider()
-						DeleteOption(
+						MenuOption(
 							title = t.allTracks,
 							subtitle = t.allTracksDesc,
 							danger = true,
@@ -717,7 +805,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 							}
 						)
 						HorizontalDivider()
-						DeleteOption(
+						MenuOption(
 							title = t.favouriteTracks,
 							subtitle = t.favouriteDesc,
 							danger = true,
@@ -736,7 +824,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 							}
 						)
 						HorizontalDivider()
-						DeleteOption(
+						MenuOption(
 							title = t.resetAll,
 							subtitle = t.resetDesc,
 							danger = true,
@@ -761,6 +849,37 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 				uiPrefs.edit().putString("language", selected.id).apply()
 			},
 			onDismiss = { showInfo = false }
+		)
+	}
+	
+	// 推送确认框：只有点了“推送”并算完计划后才出现
+	val plan = pendingPush
+	if (plan != null) {
+		AlertDialog(
+			onDismissRequest = { pendingPush = null },
+			title = { Text(t.pushConfirmTitle) },
+			text = {
+				Text(
+					if (plan.total == 0) t.pushConfirmNone
+					else t.pushConfirmBody(plan.added.size, plan.removed.size)
+				)
+			},
+			confirmButton = {
+				TextButton(
+					onClick = {
+						pendingPush = null
+						// 没有变化时这个按钮只是“关闭”，不能顺手触发下载
+						if (plan.total > 0) runPush(plan)
+					}
+				) {
+					Text(if (plan.total == 0) t.close else t.push)
+				}
+			},
+			dismissButton = if (plan.total > 0) {
+				{
+					TextButton(onClick = { pendingPush = null }) { Text(t.cancel) }
+				}
+			} else null
 		)
 	}
 	
@@ -801,19 +920,27 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun DeleteOption(
-	title: String, subtitle: String? = null, danger: Boolean = false, onClick: () -> Unit
+private fun MenuOption(
+	title: String,
+	subtitle: String? = null,
+	danger: Boolean = false,
+	enabled: Boolean = true,
+	onClick: () -> Unit
 ) {
 	Column(
 		modifier = Modifier
 			.fillMaxWidth()
-			.clickable(onClick = onClick)
+			.clickable(enabled = enabled, onClick = onClick)
 			.padding(vertical = 10.dp)
 	) {
 		Text(
 			text = title,
 			style = MaterialTheme.typography.bodyLarge,
-			color = if (danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+			color = when {
+				!enabled -> MaterialTheme.colorScheme.onSurfaceVariant
+				danger -> MaterialTheme.colorScheme.error
+				else -> MaterialTheme.colorScheme.onSurface
+			}
 		)
 		subtitle?.let {
 			Text(

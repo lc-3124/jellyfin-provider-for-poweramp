@@ -4,98 +4,135 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.jellyfin.sdk.model.UUID
 import org.json.JSONArray
 import java.io.File
 
 /**
- * 两个方向的同步，语义由用户定义：
+ * 两个手动触发的同步方向：
  *
- * A. pushServerFavourites —— 只在扫描库后跑：
- *    把 Jellyfin 远端收藏逐首写进 Poweramp（rating=5，已有 1-5 不动）。
- *    只增不减，不下载。
+ * 拉取 pullRemoteFavourites：
+ *   把 Jellyfin 远端收藏逐首写进 Poweramp（rating=5）。只增不减，不下载。
+ *   增量含义：已经在 poweramp_pushed.json 里记过的曲目跳过，避免把用户在
+ *   Poweramp 里手动取消的喜欢又加回去。
  *
- * B. mirrorToJellyfin —— 只在用户手动同步时跑：
- *    Poweramp 里 rating 1-5 的曲目全部设为 Jellyfin 收藏；
- *    Jellyfin 已收藏但 Poweramp 未喜欢（且 Poweramp 认识这首歌）的 → 取消收藏。
- *    然后由调用方下载收藏。
+ * 推送 planPush / applyPush：
+ *   Poweramp 里 rating 1-5 的曲目全部设为 Jellyfin 收藏；
+ *   Jellyfin 已收藏、Poweramp 认识却未喜欢的 → 取消收藏。
+ *   planPush 只计算不写入，界面弹确认框；确认后 applyPush 才真正执行。
+ *
+ * 更新资料库（扫描）不会再自动跑任何一个方向。
  */
 object PowerampSync {
 	private const val TAG = "PowerampSync"
 	private const val PUSHED_FILE = "poweramp_pushed.json"
 	
-	data class MirrorResult(
-		val added: Int = 0,
-		val removed: Int = 0,
+	/** 拉取结果。 */
+	data class PullResult(
+		val written: Int = 0,
+		val totalRemote: Int = 0,
 		val needsPermission: Boolean = false,
 		val error: String? = null
+	)
+	
+	/** 推送计划：预览与执行共用。只有 counts 会显示在确认框里。 */
+	data class PushPlan(
+		val added: List<UUID> = emptyList(),   // Poweramp 喜欢、Jellyfin 未收藏
+		val removed: List<UUID> = emptyList(), // Jellyfin 收藏、Poweramp 认识但未喜欢
+		val liked: Set<UUID> = emptySet()      // Poweramp 里 rating>=1 的全部曲目
 	) {
-		val total: Int get() = added + removed
+		val total: Int get() = added.size + removed.size
 	}
 	
-	/** A：远端收藏 → Poweramp。返回写入数量；-1 表示没有权限。 */
-	suspend fun pushServerFavourites(
-		context: Context,
-		client: JellyfinClientManager
-	): Int = withContext(Dispatchers.IO) {
+	data class PushResult(
+		val added: Int = 0,
+		val removed: Int = 0,
+		val failed: Int = 0,
+		val needsPermission: Boolean = false,
+		val error: String? = null
+	)
+	
+	/**
+	 * 拉取：远端收藏 → Poweramp（rating=5）。
+	 * 只处理还没同步过的曲目；Poweramp 里已被用户取消的喜欢不会强行加回。
+	 */
+	suspend fun pullRemoteFavourites(
+		context: Context, client: JellyfinClientManager
+	): PullResult = withContext(Dispatchers.IO) {
 		val favourites = client.getFavouriteTrackIds()
-		if (favourites.isEmpty()) return@withContext 0
+		if (favourites.isEmpty()) {
+			return@withContext PullResult(totalRemote = 0)
+		}
 		
-		val rows = PowerampProvider.queryRows(context) ?: return@withContext -1
-		val byTrack = rows.mapNotNull { row ->
-			row.trackId?.let { it to row }
-		}.toMap()
+		val rows = PowerampProvider.queryRows(context)
+			?: return@withContext PullResult(needsPermission = true)
+		val byTrack = rows.mapNotNull { row -> row.trackId?.let { it to row } }.toMap()
 		val pushed = loadPushed(context)
 		var written = 0
 		
 		favourites.forEach { trackId ->
 			val row = byTrack[trackId] ?: return@forEach
-			if (row.rating == 0) {
-				if (PowerampProvider.setRating(context, row.rowId, 5)) {
-					written++
-					pushed.add(trackId.toString())
+			val key = trackId.toString()
+			when {
+				row.rating > 0 -> pushed.add(key) // 已经喜欢，记下来即可
+				key !in pushed -> {
+					if (PowerampProvider.setRating(context, row.rowId, 5)) {
+						written++
+						pushed.add(key)
+					}
 				}
-			} else {
-				// 已经是喜欢，记下来，后面取消同步时才知道这首歌归我们管
-				pushed.add(trackId.toString())
+				// rating == 0 且 key in pushed：用户手动取消过，不强行加回
 			}
 		}
 		
 		savePushed(context, pushed)
 		if (written > 0) PowerampProvider.reloadData(context)
-		Log.i(TAG, "Pushed $written remote favourites to Poweramp")
-		written
+		Log.i(TAG, "Pulled $written of ${favourites.size} remote favourites")
+		PullResult(written = written, totalRemote = favourites.size)
 	}
 	
-	/** B：Poweramp 喜欢集合 → 镜像到 Jellyfin。 */
-	suspend fun mirrorToJellyfin(
-		context: Context,
-		client: JellyfinClientManager
-	): MirrorResult = withContext(Dispatchers.IO) {
-		val rows = PowerampProvider.queryRows(context)
-			?: return@withContext MirrorResult(needsPermission = true)
+	/** 计算推送计划，不写入任何东西。返回 null 表示没有 Poweramp 访问权限。 */
+	suspend fun planPush(
+		context: Context, client: JellyfinClientManager
+	): PushPlan? = withContext(Dispatchers.IO) {
+		val rows = PowerampProvider.queryRows(context) ?: return@withContext null
 		
 		val known = rows.mapNotNull { it.trackId }.toSet()
 		val liked = rows.filter { it.rating >= 1 }.mapNotNull { it.trackId }.toSet()
 		val serverFavourites = client.getFavouriteTrackIds().toSet()
 		
+		val plan = PushPlan(
+			added = (liked - serverFavourites).sortedBy { it.toString() },
+			// 只处理 Poweramp 曲库里确实存在的歌，避免误删它没扫描到的远端收藏
+			removed = (serverFavourites - liked).filter { it in known }.sortedBy { it.toString() },
+			liked = liked
+		)
+		Log.i(TAG, "Push plan: +${plan.added.size} -${plan.removed.size} liked=${liked.size}")
+		plan
+	}
+	
+	/** 执行计划：写入 Jellyfin 收藏，并维护 poweramp_pushed 记录。 */
+	suspend fun applyPush(
+		context: Context, client: JellyfinClientManager, plan: PushPlan
+	): PushResult = withContext(Dispatchers.IO) {
 		var added = 0
 		var removed = 0
+		var failed = 0
 		
-		(liked - serverFavourites).forEach { trackId ->
-			if (client.setFavourite(trackId, true)) added++
+		plan.added.forEach { trackId ->
+			if (client.setFavourite(trackId, true)) added++ else failed++
 		}
-		(serverFavourites - liked).forEach { trackId ->
-			// 只处理 Poweramp 曲库里确实存在的歌，避免误删它没扫描到的远端收藏
-			if (trackId in known && client.setFavourite(trackId, false)) removed++
+		plan.removed.forEach { trackId ->
+			if (client.setFavourite(trackId, false)) removed++ else failed++
 		}
 		
 		val pushed = loadPushed(context)
-		liked.forEach { pushed.add(it.toString()) }
-		(serverFavourites - liked).forEach { pushed.remove(it.toString()) }
+		plan.liked.forEach { pushed.add(it.toString()) }
+		plan.removed.forEach { pushed.remove(it.toString()) }
 		savePushed(context, pushed)
 		
-		Log.i(TAG, "Mirror: added=$added removed=$removed liked=${liked.size}")
-		MirrorResult(added, removed)
+		Log.i(TAG, "Push applied: +$added -$removed failed=$failed")
+		PushResult(added = added, removed = removed, failed = failed)
 	}
 	
 	private fun pushedFile(context: Context) = File(context.filesDir, PUSHED_FILE)

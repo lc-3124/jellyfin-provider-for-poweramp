@@ -14,6 +14,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import me.ishan.jellyfin_saf.db.AppDatabase
 import org.jellyfin.sdk.model.UUID
@@ -342,6 +344,7 @@ class TrackPlaybackManager(
 	private var maxCacheSizeMB: Long = 2048
 ) {
 	private val activeTracks = ConcurrentHashMap<UUID, SharedTrackState>()
+	private val downloadMutexes = ConcurrentHashMap<UUID, Mutex>()
 	
 	fun setMaxCacheSizeMB(sizeMB: Long) {
 		maxCacheSizeMB = sizeMB
@@ -364,7 +367,7 @@ class TrackPlaybackManager(
 				// 原来的 SQL 名为 "oldest" 却没有 ORDER BY，实际是按 rowid 随机顺序删。
 				val candidates = db.trackDao().getOldestAccessedTrackStatesExcludingFav()
 					.filter { !activeTracks.containsKey(it.id) }
-					.map { it to it.getFile(tracksDir) }
+					.map { it to (findCacheFile(it.id)?.file ?: it.getFile(tracksDir)) }
 					.sortedBy { it.second.lastModified() }
 				
 				for ((record, file) in candidates) {
@@ -395,6 +398,16 @@ class TrackPlaybackManager(
 	fun openTrackForStreaming(
 		trackId: UUID, sizeBytes: Long, durationMs: Long, jellyfinClient: JellyfinClientManager
 	): TrackStream {
+		val previousQuality = findCacheFile(trackId)?.quality
+		val previousState = db.trackDao().getTrackStateById(trackId)
+		// 之前缓存的是别的档位（或大小对不上），位图不能复用，重建一条 PARTIAL
+		if (previousState != null &&
+			(previousState.sizeBytes != sizeBytes ||
+				(previousQuality != null && previousQuality != AudioQuality.LOSSLESS))
+		) {
+			db.trackDao().deleteTrackStateById(trackId)
+		}
+		
 		val cacheFile = File(tracksDir, "$trackId.cache")
 		val channel = FileChannel.open(
 			cacheFile.toPath(),
@@ -438,6 +451,10 @@ class TrackPlaybackManager(
 			trackId, sharedState, channel, db, jellyfinClient,
 			onTrackCompleted = {
 				scope.launch {
+					// 无损下载完成后，低档缓存就没必要留了
+					AudioQuality.entries
+						.filter { it != AudioQuality.LOSSLESS }
+						.forEach { cacheFile(trackId, it).delete() }
 					prefetchAlbumArt(trackId, jellyfinClient)
 					scheduleEviction()
 				}
@@ -453,19 +470,130 @@ class TrackPlaybackManager(
 		return stream
 	}
 	
-	fun getCachedTrack(trackId: UUID): File? {
-		val entry = db.trackDao().getTrackStateById(trackId)
-		if (entry?.state != ContentState.COMPLETE) {
-			return null
+	data class CachedTrack(val file: File, val quality: AudioQuality, val sizeBytes: Long)
+	
+	fun cacheFile(trackId: UUID, quality: AudioQuality): File =
+		File(tracksDir, "$trackId${quality.fileNameSuffix}")
+	
+	/** 找出这首歌当前缓存的文件（每首歌只保留一份，优先高质量）。 */
+	fun findCacheFile(trackId: UUID): CachedTrack? {
+		AudioQuality.entries.sortedByDescending { it.rank }.forEach { quality ->
+			val file = cacheFile(trackId, quality)
+			if (file.exists() && file.length() > 0L) {
+				return CachedTrack(file, quality, file.length())
+			}
 		}
-		val path = File(tracksDir, "$trackId.cache").toPath()
-		if (!path.exists()) {
-			return null
+		return null
+	}
+	
+	fun getCachedTrackInfo(trackId: UUID): CachedTrack? {
+		val state = db.trackDao().getTrackStateById(trackId) ?: return null
+		if (state.state != ContentState.COMPLETE) return null
+		val cached = findCacheFile(trackId) ?: return null
+		// LRU 依据：真正播放过才算“访问”
+		cached.file.setLastModified(System.currentTimeMillis())
+		return cached
+	}
+	
+	fun getCachedTrack(trackId: UUID): File? = getCachedTrackInfo(trackId)?.file
+	
+	private fun deleteCacheFiles(trackId: UUID) {
+		AudioQuality.entries.forEach { cacheFile(trackId, it).delete() }
+	}
+
+	/**
+	 * 转码档的“先下后播”：整轨下载完成才返回文件。
+	 * 失败返回 null，由调用方回退到旧缓存或无损流。
+	 */
+	suspend fun getOrDownloadTranscoded(
+		trackId: UUID,
+		quality: AudioQuality,
+		durationMs: Long,
+		client: JellyfinClientManager
+	): File? = withContext(Dispatchers.IO) {
+		if (quality == AudioQuality.LOSSLESS) return@withContext null
+		
+		val cached = getCachedTrackInfo(trackId)
+		if (cached != null && cached.quality.rank >= quality.rank) {
+			return@withContext cached.file
 		}
-		return path.toFile().apply {
-			// LRU 依据：真正播放过才算“访问”
-			setLastModified(System.currentTimeMillis())
+		
+		// 同一首歌并发打开时只下载一次
+		val mutex = downloadMutexes.getOrPut(trackId) { Mutex() }
+		mutex.withLock {
+			val again = getCachedTrackInfo(trackId)
+			if (again != null && again.quality.rank >= quality.rank) {
+				return@withLock again.file
+			}
+			if (downloadWholeTrack(trackId, quality, durationMs, client)) {
+				val file = cacheFile(trackId, quality)
+				prefetchAlbumArt(trackId, client)
+				file
+			} else {
+				null
+			}
 		}
+	}
+	
+	/** 完整下载一首歌（任意档位）到缓存，成功则原子替换同曲目的其它档位。 */
+	suspend fun downloadWholeTrack(
+		trackId: UUID,
+		quality: AudioQuality,
+		durationMs: Long,
+		client: JellyfinClientManager
+	): Boolean = withContext(Dispatchers.IO) {
+		val target = cacheFile(trackId, quality)
+		val tmp = File(target.parentFile, target.name + ".tmp")
+		tmp.delete()
+		
+		val ok = try {
+			FileChannel.open(
+				tmp.toPath(),
+				StandardOpenOption.WRITE,
+				StandardOpenOption.CREATE,
+				StandardOpenOption.TRUNCATE_EXISTING
+			).use { channel ->
+				client.downloadTrack(
+					trackId = trackId,
+					outputFile = channel,
+					byteOffset = 0L,
+					byteLength = null,
+					quality = quality
+				)
+			}
+		} catch (e: Exception) {
+			Log.w(TAG, "[$trackId] Download ($quality) failed: ${e.message}")
+			false
+		}
+		
+		if (!ok || !tmp.exists() || tmp.length() <= 0L) {
+			tmp.delete()
+			return@withContext false
+		}
+		
+		val size = tmp.length()
+		target.delete()
+		if (!tmp.renameTo(target)) {
+			tmp.delete()
+			return@withContext false
+		}
+		
+		val totalChunks =
+			((size + TrackStateEntity.CHUNK_SIZE - 1) / TrackStateEntity.CHUNK_SIZE).toInt()
+		db.trackDao().insertTrackState(
+			TrackStateEntity(
+				id = trackId,
+				state = ContentState.COMPLETE,
+				chunks = BitSet().apply { set(0, totalChunks) },
+				sizeBytes = size,
+				durationMs = durationMs
+			)
+		)
+		target.setLastModified(System.currentTimeMillis())
+		// 单档策略：替换掉其它档位的文件
+		AudioQuality.entries.filter { it != quality }.forEach { cacheFile(trackId, it).delete() }
+		Log.i(TAG, "[$trackId] Cached at $quality ($size bytes)")
+		true
 	}
 	
 	/**
@@ -502,7 +630,7 @@ class TrackPlaybackManager(
 			tracksDir.listFiles()?.forEach { file ->
 				if (!file.isFile || !file.name.endsWith(".cache")) return@forEach
 				val id = try {
-					UUID.fromString(file.nameWithoutExtension)
+					UUID.fromString(AudioQuality.trackIdPart(file.name))
 				} catch (e: Exception) {
 					null
 				} ?: return@forEach
@@ -692,6 +820,7 @@ class TrackPlaybackManager(
 	 */
 	suspend fun downloadFavouriteTracks(
 		client: JellyfinClientManager,
+		quality: AudioQuality,
 		onProgress: suspend (done: Int, total: Int, title: String) -> Unit
 	): FavouriteDownloadResult = withContext(Dispatchers.IO) {
 		val ids = db.trackDao().getFavouriteTrackIds()
@@ -708,10 +837,10 @@ class TrackPlaybackManager(
 				skipped++
 				return@forEachIndexed
 			}
-			val state = db.trackDao().getTrackStateById(trackId)
-			val file = File(tracksDir, "$trackId.cache")
-			if (state?.state == ContentState.COMPLETE && file.exists() &&
-				file.length() == state.sizeBytes
+			
+			val cached = getCachedTrackInfo(trackId)
+			if (cached != null && cached.quality.rank >= quality.rank &&
+				db.trackDao().getTrackStateById(trackId)?.state == ContentState.COMPLETE
 			) {
 				skipped++
 				return@forEachIndexed
@@ -721,49 +850,19 @@ class TrackPlaybackManager(
 				return@forEachIndexed
 			}
 			
-			val size = metadata.size?.takeIf { it > 0L } ?: state?.sizeBytes ?: 0L
-			val duration = metadata.duration ?: state?.durationMs ?: 0L
-			if (size <= 0L) {
-				failed++
-				return@forEachIndexed
-			}
-			
-			val ok = try {
-				FileChannel.open(
-					file.toPath(),
-					StandardOpenOption.READ,
-					StandardOpenOption.WRITE,
-					StandardOpenOption.CREATE,
-					StandardOpenOption.SPARSE
-				).use { channel ->
-					val marker = ByteBuffer.wrap(byteArrayOf(0))
-					channel.write(marker, size - 1)
-					client.downloadTrack(
-						trackId = trackId,
-						outputFile = channel,
-						byteOffset = 0L,
-						byteLength = size
-					)
+			val duration = metadata.duration ?: 0L
+			val mutex = downloadMutexes.getOrPut(trackId) { Mutex() }
+			val ok = mutex.withLock {
+				val again = getCachedTrackInfo(trackId)
+				if (again != null && again.quality.rank >= quality.rank) {
+					true
+				} else {
+					downloadWholeTrack(trackId, quality, duration, client)
 				}
-			} catch (e: Exception) {
-				Log.w(TAG, "[$trackId] Favourite download failed: ${e.message}")
-				false
 			}
 			
 			if (ok) {
-				val totalChunks =
-					((size + TrackStateEntity.CHUNK_SIZE - 1) / TrackStateEntity.CHUNK_SIZE).toInt()
-				val chunks = BitSet().apply { set(0, totalChunks) }
-				db.trackDao().insertTrackState(
-					TrackStateEntity(
-						id = trackId,
-						state = ContentState.COMPLETE,
-						chunks = chunks,
-						sizeBytes = size,
-						durationMs = duration
-					)
-				)
-				file.setLastModified(System.currentTimeMillis())
+				downloaded++
 				metadata.albumId?.let { albumId ->
 					if (getCachedThumbnail(albumId) == null) {
 						try {
@@ -772,7 +871,6 @@ class TrackPlaybackManager(
 						}
 					}
 				}
-				downloaded++
 			} else {
 				failed++
 			}
@@ -798,7 +896,7 @@ class TrackPlaybackManager(
 		val partialTracks = if (excludeFavourites) db.trackDao()
 			.getTrackIdsByStateExcludingFav(ContentState.PARTIAL) else db.trackDao()
 			.getTrackIdsByState(ContentState.PARTIAL)
-		partialTracks.forEach { File(tracksDir, "$it.cache").delete() }
+		partialTracks.forEach { deleteCacheFiles(it) }
 		if (excludeFavourites) db.trackDao()
 			.deleteTracksByStateExcludingFav(ContentState.PARTIAL) else db.trackDao()
 			.deleteTracksByState(ContentState.PARTIAL)
@@ -815,13 +913,13 @@ class TrackPlaybackManager(
 		val allTracks =
 			if (excludeFavourites) db.trackDao().getTrackIdsExcludingFav() else db.trackDao()
 				.getAllTrackIds()
-		allTracks.forEach { File(tracksDir, "$it.cache").delete() }
+		allTracks.forEach { deleteCacheFiles(it) }
 		if (excludeFavourites) db.trackDao().deleteTracksExcludingFav() else db.trackDao()
 			.deleteAllMetadata()
 	}
 	
 	fun deleteFavouriteTracks() {
-		db.trackDao().getFavouriteTrackIds().forEach { File(tracksDir, "$it.cache").delete() }
+		db.trackDao().getFavouriteTrackIds().forEach { deleteCacheFiles(it) }
 		db.trackDao().deleteFavouriteTracks()
 	}
 	
@@ -833,7 +931,8 @@ class TrackPlaybackManager(
 		val completeFilesSize: Long,
 		val completeSongsNum: Int,
 		val albumArtsSize: Long,
-		val databaseSize: Long
+		val databaseSize: Long,
+		val qualityCounts: Map<AudioQuality, Int> = emptyMap()
 	) {
 		val totalSize: Long get() = partialFilesSize + completeFilesSize + albumArtsSize + databaseSize
 	}
@@ -847,12 +946,16 @@ class TrackPlaybackManager(
 		var favouriteNum = 0
 		val partialTracks = db.trackDao().getTrackIdsByState(ContentState.PARTIAL).toSet()
 		val favouriteTracks = db.trackDao().getFavouriteTrackIds().toSet()
+		val qualityCounts = mutableMapOf<AudioQuality, Int>()
 		tracksDir.listFiles()?.forEach { file ->
+			if (!file.isFile || !file.name.endsWith(".cache")) return@forEach
 			val trackId = try {
-				UUID.fromString(file.nameWithoutExtension)
+				UUID.fromString(AudioQuality.trackIdPart(file.name))
 			} catch (_: Exception) {
 				return@forEach
 			} ?: return@forEach
+			val quality = AudioQuality.fromName(file.name)
+			qualityCounts[quality] = (qualityCounts[quality] ?: 0) + 1
 			if (partialTracks.contains(trackId)) {
 				partialNum++
 				val size = db.trackDao().getTrackStateById(trackId)?.chunks?.cardinality()
@@ -879,7 +982,8 @@ class TrackPlaybackManager(
 			completeSize,
 			completeNum,
 			(thumbDir.listFiles()?.sumOf { it.length() } ?: 0L),
-			dbSize)
+			dbSize,
+			qualityCounts)
 	}
 	
 	fun shutdown() {

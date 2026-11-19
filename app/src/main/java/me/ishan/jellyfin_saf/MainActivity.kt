@@ -9,7 +9,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,6 +32,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -95,6 +98,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 	var isSyncing by remember { mutableStateOf(false) }
 	var syncProgress by remember { mutableStateOf("") }
 	var favouriteCount by remember { mutableStateOf(0) }
+	var quality by remember { mutableStateOf(manager.getQuality()) }
 	var showDeleteMenu by remember { mutableStateOf(false) }
 	var showResetConfirm by remember { mutableStateOf(false) }
 	var isScanning by remember { mutableStateOf(false) }
@@ -380,6 +384,38 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		
 		Spacer(modifier = Modifier.height(16.dp))
 		
+		Text(
+			text = "Audio quality",
+			style = MaterialTheme.typography.titleSmall,
+			modifier = Modifier.align(Alignment.Start)
+		)
+		AudioQuality.entries.reversed().forEach { option ->
+			Row(
+				modifier = Modifier
+					.fillMaxWidth()
+					.clickable {
+						quality = option
+						manager.setQuality(option)
+					},
+				verticalAlignment = Alignment.CenterVertically
+			) {
+				RadioButton(
+					selected = quality == option,
+					onClick = {
+						quality = option
+						manager.setQuality(option)
+					}
+				)
+				Text(
+					text = option.label +
+						if (option == AudioQuality.LOSSLESS) "  (original file)" else "  (AAC)",
+					style = MaterialTheme.typography.bodyMedium
+				)
+			}
+		}
+		
+		Spacer(modifier = Modifier.height(8.dp))
+		
 		OutlinedTextField(
 			value = maxCacheSize,
 			onValueChange = {
@@ -407,6 +443,15 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					color = MaterialTheme.colorScheme.onSurface,
 					modifier = Modifier.padding(bottom = 4.dp)
 				)
+				breakdown.qualityCounts.takeIf { it.isNotEmpty() }?.let { counts ->
+					Text(
+						text = "  • Quality: " + AudioQuality.entries.reversed().joinToString(" / ") { q ->
+							"${counts[q] ?: 0} ${q.name.lowercase()}"
+						},
+						style = MaterialTheme.typography.bodySmall,
+						color = MaterialTheme.colorScheme.onSurfaceVariant
+					)
+				}
 				Text(
 					text = "Currently cached: ${
 						String.format(
@@ -563,7 +608,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					}
 					syncProgress =
 						"Synced ${result.liked + result.unliked} likes, downloading favourites..."
-					val dl = playbackManager.downloadFavouriteTracks(manager) { done, total, title ->
+					val dl = playbackManager.downloadFavouriteTracks(manager, manager.getQuality()) { done, total, title ->
 						withContext(Dispatchers.Main) {
 							syncProgress = "Downloading $done/$total${
 								if (title.isNotBlank()) ": $title" else ""

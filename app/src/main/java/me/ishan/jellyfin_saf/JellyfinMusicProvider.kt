@@ -207,9 +207,10 @@ class JellyfinMusicProvider : DocumentsProvider() {
 						p1.await() to p2.await()
 					}
 					val metadata = meta ?: return result
+					val cached = playbackManager.getCachedTrackInfo(documentId.trackId)
 					addTrackRow(
 						result, cols, docId, metadata,
-						size = metadata.size ?: documentId.sizeBytes,
+						size = cached?.sizeBytes ?: metadata.size ?: documentId.sizeBytes,
 						lastModified = metadata.lastFetched,
 						lyrics = lyrics
 					)
@@ -373,9 +374,36 @@ class JellyfinMusicProvider : DocumentsProvider() {
 		
 		when (documentId) {
 			is DocumentId.Type.Track -> {
-				playbackManager.getCachedTrack(documentId.trackId)?.let { file ->
-					Log.d(TAG, "[${documentId.trackId}] Opening document from disk")
-					return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+				val quality = jellyfinClient.getQuality()
+				val cached = playbackManager.getCachedTrackInfo(documentId.trackId)
+				
+				// 1) 缓存档位不低于请求，直接播缓存
+				if (cached != null && cached.quality.rank >= quality.rank) {
+					Log.d(
+						TAG,
+						"[${documentId.trackId}] Cache hit at ${cached.quality} (requested $quality)"
+					)
+					return ParcelFileDescriptor.open(cached.file, ParcelFileDescriptor.MODE_READ_ONLY)
+				}
+				
+				// 2) 需要转码档：整轨下载完再播（几 MB，可接受）
+				if (quality != AudioQuality.LOSSLESS) {
+					val downloaded = runBlocking {
+						playbackManager.getOrDownloadTranscoded(
+							documentId.trackId, quality, documentId.durationMs, jellyfinClient
+						)
+					}
+					if (downloaded != null) {
+						Log.d(TAG, "[${documentId.trackId}] Transcoded $quality ready")
+						return ParcelFileDescriptor.open(
+							downloaded, ParcelFileDescriptor.MODE_READ_ONLY
+						)
+					}
+					// 下载失败：有旧缓存就先播旧缓存
+					cached?.let {
+						Log.w(TAG, "[${documentId.trackId}] Transcode failed, falling back to cache")
+						return ParcelFileDescriptor.open(it.file, ParcelFileDescriptor.MODE_READ_ONLY)
+					}
 				}
 				
 				Log.d(TAG, "[${documentId.trackId}] Opening document for streaming")

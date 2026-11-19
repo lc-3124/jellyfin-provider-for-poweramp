@@ -141,6 +141,15 @@ class JellyfinClientManager(private val context: Context? = null) {
 		return accessToken != null && currentUserId != null
 	}
 	
+	fun getQuality(): AudioQuality =
+		prefs?.getString(KEY_QUALITY, null)?.let { stored ->
+			runCatching { AudioQuality.valueOf(stored) }.getOrNull()
+		} ?: AudioQuality.LOSSLESS
+	
+	fun setQuality(quality: AudioQuality) {
+		prefs?.edit { putString(KEY_QUALITY, quality.name) }
+	}
+	
 	fun getMaxCacheSize(): Long = prefs?.getLong(KEY_MAX_CACHE_SIZE, 2048) ?: 2048
 	
 	fun setMaxCacheSize(sizeMB: Long) {
@@ -551,9 +560,10 @@ class JellyfinClientManager(private val context: Context? = null) {
 		outputFile: FileChannel,
 		byteOffset: Long = 0L,
 		byteLength: Long? = null,
+		quality: AudioQuality = AudioQuality.LOSSLESS,
 		onProgress: ((Long) -> Unit)? = null,
 	): Boolean = withContext(Dispatchers.IO) {
-		val url = getStreamUrl(trackId) ?: return@withContext false
+		val url = getStreamUrl(trackId, quality) ?: return@withContext false
 		val token = accessToken ?: return@withContext false
 		
 		try {
@@ -639,15 +649,30 @@ class JellyfinClientManager(private val context: Context? = null) {
 	/**
 	 * Get track stream URL using SDK's URL builder
 	 */
-	fun getStreamUrl(trackId: UUID): String? {
+	fun getStreamUrl(
+		trackId: UUID, quality: AudioQuality = AudioQuality.LOSSLESS
+	): String? {
 		val apiClient = getApiClient() ?: return null
 		
-		// Use SDK's URL construction with static=true
-		return apiClient.audioApi.getAudioStreamUrl(
-			itemId = trackId,
-			static = true,
-			deviceId = getDeviceId(),
-		)
+		if (quality == AudioQuality.LOSSLESS) {
+			// 原文件直出，SDK 的 URL 构造已经够用
+			return apiClient.audioApi.getAudioStreamUrl(
+				itemId = trackId,
+				static = true,
+				deviceId = getDeviceId(),
+			)
+		}
+		
+		// 转码：显式构造，避免 SDK 默认参数覆盖码率
+		val bitrate = quality.bitrate ?: return null
+		return buildString {
+			append(serverUrl)
+			append("/Audio/").append(trackId).append("/stream")
+			append("?static=false")
+			append("&audioCodec=").append(quality.codec ?: "aac")
+			append("&audioBitrate=").append(bitrate)
+			append("&deviceId=").append(getDeviceId())
+		}
 	}
 	
 	/**
@@ -902,6 +927,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 		private const val KEY_USER_ID = "user_id"
 		private const val KEY_DEVICE_ID = "device_id"
 		private const val KEY_MAX_CACHE_SIZE = "max_cache_size"
+		private const val KEY_QUALITY = "audio_quality"
 		private const val ALBUMS_CACHE_TTL_MS = 120_000L
 	}
 }

@@ -346,7 +346,6 @@ class TrackPlaybackManager(
 	private val activeTracks = ConcurrentHashMap<UUID, SharedTrackState>()
 	private val downloadMutexes = ConcurrentHashMap<UUID, Mutex>()
 	private val transcodeStreams = ConcurrentHashMap<UUID, TranscodeStream>()
-	private val prefetching = ConcurrentHashMap.newKeySet<UUID>()
 	
 	fun setMaxCacheSizeMB(sizeMB: Long) {
 		maxCacheSizeMB = sizeMB
@@ -596,41 +595,6 @@ class TrackPlaybackManager(
 		}
 		
 		return stream
-	}
-	
-	/**
-	 * 后台预取：在浏览专辑时先把前几首按当前档位转好，点歌时就能直接命中。
-	 */
-	fun prefetchTracks(
-		trackIds: List<UUID>,
-		quality: AudioQuality,
-		client: JellyfinClientManager,
-		limit: Int = 2
-	) {
-		if (quality == AudioQuality.LOSSLESS) return
-		scope.launch(Dispatchers.IO) {
-			trackIds.take(limit).forEach { trackId ->
-				if (!prefetching.add(trackId)) return@forEach
-				try {
-					val cached = getCachedTrackInfo(trackId)
-					if (cached != null && cached.quality.rank >= quality.rank) return@forEach
-					val metadata = db.trackDao().getTrackById(trackId) ?: return@forEach
-					val mutex = downloadMutexes.getOrPut(trackId) { Mutex() }
-					mutex.withLock {
-						val again = getCachedTrackInfo(trackId)
-						if (again == null || again.quality.rank < quality.rank) {
-							downloadWholeTrack(
-								trackId, quality, metadata.duration ?: 0L, client
-							)
-						}
-					}
-				} catch (e: Exception) {
-					Log.w(TAG, "Prefetch $trackId failed: ${e.message}")
-				} finally {
-					prefetching.remove(trackId)
-				}
-			}
-		}
 	}
 	
 	/** 完整下载一首歌（任意档位）到缓存，成功则原子替换同曲目的其它档位。 */

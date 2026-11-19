@@ -292,10 +292,6 @@ class JellyfinMusicProvider : DocumentsProvider() {
 							size = track.size, lastModified = track.lastFetched, lyrics = null
 						)
 					}
-					// 转码档：顺手把前两首转好，点歌时直接命中
-					playbackManager.prefetchTracks(
-						tracks.map { it.id }, jellyfinClient.getQuality(), jellyfinClient
-					)
 				}
 				
 				is DocumentId.Type.CacheRoot -> {

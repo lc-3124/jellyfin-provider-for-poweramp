@@ -11,6 +11,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -384,37 +386,60 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		
 		Spacer(modifier = Modifier.height(16.dp))
 		
-		Text(
+				Text(
 			text = "Audio quality",
 			style = MaterialTheme.typography.titleSmall,
 			modifier = Modifier.align(Alignment.Start)
 		)
-		AudioQuality.entries.reversed().forEach { option ->
-			Row(
-				modifier = Modifier
-					.fillMaxWidth()
-					.clickable {
-						quality = option
-						manager.setQuality(option)
-					},
-				verticalAlignment = Alignment.CenterVertically
-			) {
-				RadioButton(
-					selected = quality == option,
-					onClick = {
-						quality = option
-						manager.setQuality(option)
+		Spacer(modifier = Modifier.height(6.dp))
+		Row(
+			modifier = Modifier.fillMaxWidth(),
+			horizontalArrangement = Arrangement.spacedBy(8.dp)
+		) {
+			AudioQuality.entries.reversed().forEach { option ->
+				val selected = quality == option
+				val label = when (option) {
+					AudioQuality.LOSSLESS -> "Lossless"
+					AudioQuality.MEDIUM -> "Medium"
+					AudioQuality.LOW -> "Low"
+				}
+				val onClick = {
+					quality = option
+					manager.setQuality(option)
+				}
+				if (selected) {
+					Button(
+						onClick = onClick,
+						modifier = Modifier.weight(1f),
+						contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+					) {
+						Text(label, maxLines = 1, style = MaterialTheme.typography.labelLarge)
 					}
-				)
-				Text(
-					text = option.label +
-						if (option == AudioQuality.LOSSLESS) "  (original file)" else "  (AAC)",
-					style = MaterialTheme.typography.bodyMedium
-				)
+				} else {
+					OutlinedButton(
+						onClick = onClick,
+						modifier = Modifier.weight(1f),
+						contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+					) {
+						Text(label, maxLines = 1, style = MaterialTheme.typography.labelLarge)
+					}
+				}
 			}
 		}
+		Text(
+			text = when (quality) {
+				AudioQuality.LOSSLESS -> "Original file, no re-encoding"
+				AudioQuality.MEDIUM -> "AAC 128 kbps, transcoded on demand"
+				AudioQuality.LOW -> "AAC 64 kbps, transcoded on demand"
+			},
+			style = MaterialTheme.typography.bodySmall,
+			color = MaterialTheme.colorScheme.onSurfaceVariant,
+			modifier = Modifier
+				.align(Alignment.Start)
+				.padding(top = 4.dp)
+		)
 		
-		Spacer(modifier = Modifier.height(8.dp))
+		Spacer(modifier = Modifier.height(12.dp))
 		
 		OutlinedTextField(
 			value = maxCacheSize,
@@ -437,75 +462,50 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		
 		cacheBreakdown?.let { breakdown ->
 			Column(modifier = Modifier.fillMaxWidth()) {
+				val songs = breakdown.completeSongsNum + breakdown.partialSongsNum
 				Text(
-					text = "Liked on Jellyfin: $favouriteCount songs",
-					style = MaterialTheme.typography.bodyLarge,
-					color = MaterialTheme.colorScheme.onSurface,
-					modifier = Modifier.padding(bottom = 4.dp)
+					text = "Cached ${formatMb(breakdown.totalSize)} · $songs songs",
+					style = MaterialTheme.typography.titleMedium
 				)
-				breakdown.qualityCounts.takeIf { it.isNotEmpty() }?.let { counts ->
+				val qualityParts = AudioQuality.entries.reversed().mapNotNull { q ->
+					val count = breakdown.qualityCounts[q] ?: 0
+					if (count > 0) "${q.shortLabel} $count" else null
+				}
+				if (qualityParts.isNotEmpty()) {
 					Text(
-						text = "  • Quality: " + AudioQuality.entries.reversed().joinToString(" / ") { q ->
-							"${counts[q] ?: 0} ${q.name.lowercase()}"
-						},
+						text = "Quality: " + qualityParts.joinToString(" · "),
+						style = MaterialTheme.typography.bodySmall,
+						color = MaterialTheme.colorScheme.onSurfaceVariant,
+						modifier = Modifier.padding(top = 2.dp)
+					)
+				}
+				Text(
+					text = "Artwork ${formatMb(breakdown.albumArtsSize)} · " +
+						"Database ${formatMb(breakdown.databaseSize)}",
+					style = MaterialTheme.typography.bodySmall,
+					color = MaterialTheme.colorScheme.onSurfaceVariant
+				)
+				if (breakdown.partialSongsNum > 0) {
+					Text(
+						text = "Unfinished: ${breakdown.partialSongsNum} songs · " +
+							formatMb(breakdown.partialFilesSize),
+						style = MaterialTheme.typography.bodySmall,
+						color = MaterialTheme.colorScheme.onSurfaceVariant
+					)
+				}
+				if (breakdown.favouriteSongsNum > 0) {
+					Text(
+						text = "Favourites: ${breakdown.favouriteSongsNum} songs · " +
+							formatMb(breakdown.favouriteFilesSize) + " (included above)",
 						style = MaterialTheme.typography.bodySmall,
 						color = MaterialTheme.colorScheme.onSurfaceVariant
 					)
 				}
 				Text(
-					text = "Currently cached: ${
-						String.format(
-							"%.2f MB", breakdown.totalSize / (1024.0 * 1024.0)
-						)
-					}  / ${breakdown.completeSongsNum + breakdown.partialSongsNum} Songs",
-					style = MaterialTheme.typography.bodyLarge,
-					color = MaterialTheme.colorScheme.onSurface,
-					modifier = Modifier.padding(bottom = 4.dp)
-				)
-				Text(
-					text = "  • Partial files: ${
-						String.format(
-							"%.2f MB", breakdown.partialFilesSize / (1024.0 * 1024.0)
-						)
-					}  / ${breakdown.partialSongsNum} Songs",
+					text = "Liked on Jellyfin: $favouriteCount songs",
 					style = MaterialTheme.typography.bodySmall,
-					color = MaterialTheme.colorScheme.onSurfaceVariant
-				)
-				Text(
-					text = "  • Favourite files: ${
-						String.format(
-							"%.2f MB", breakdown.favouriteFilesSize / (1024.0 * 1024.0)
-						)
-					} / ${breakdown.favouriteSongsNum} Songs",
-					style = MaterialTheme.typography.bodySmall,
-					color = MaterialTheme.colorScheme.onSurfaceVariant
-				)
-				Text(
-					text = "  • Complete files: ${
-						String.format(
-							"%.2f MB", breakdown.completeFilesSize / (1024.0 * 1024.0)
-						)
-					} / ${breakdown.completeSongsNum} Songs",
-					style = MaterialTheme.typography.bodySmall,
-					color = MaterialTheme.colorScheme.onSurfaceVariant
-				)
-				Text(
-					text = "  • Album arts: ${
-						String.format(
-							"%.2f MB", breakdown.albumArtsSize / (1024.0 * 1024.0)
-						)
-					}",
-					style = MaterialTheme.typography.bodySmall,
-					color = MaterialTheme.colorScheme.onSurfaceVariant
-				)
-				Text(
-					text = "  • Database: ${
-						String.format(
-							"%.2f MB", breakdown.databaseSize / (1024.0 * 1024.0)
-						)
-					}",
-					style = MaterialTheme.typography.bodySmall,
-					color = MaterialTheme.colorScheme.onSurfaceVariant
+					color = MaterialTheme.colorScheme.onSurfaceVariant,
+					modifier = Modifier.padding(top = 2.dp)
 				)
 			}
 		} ?: Text(
@@ -649,126 +649,130 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		
 		Spacer(modifier = Modifier.height(8.dp))
 		
-		// 所有破坏性操作统一收进这个入口，避免误触
-		Button(
-			onClick = { showDeleteMenu = true },
+		// 破坏性操作收进一个可展开的区域，而不是一个按钮
+		Card(
 			modifier = Modifier.fillMaxWidth(),
-			enabled = !isEvicting && !isCompleting && !isSyncing,
-			colors = ButtonDefaults.buttonColors(
-				containerColor = MaterialTheme.colorScheme.errorContainer,
-				contentColor = MaterialTheme.colorScheme.onErrorContainer
+			colors = CardDefaults.cardColors(
+				containerColor = MaterialTheme.colorScheme.surfaceVariant
 			)
 		) {
-			if (isEvicting) {
-				CircularProgressIndicator(
-					modifier = Modifier.size(24.dp),
-					color = MaterialTheme.colorScheme.onErrorContainer
-				)
-				Spacer(modifier = Modifier.width(8.dp))
-				Text("Trimming cache...")
-			} else {
-				Text("Delete")
-			}
-		}
-	}
-	
-	if (showDeleteMenu) {
-		AlertDialog(
-			onDismissRequest = { showDeleteMenu = false },
-			title = { Text("Delete") },
-			text = {
-				Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-					DeleteOption(
-						title = "Trim to cache limit",
-						subtitle = "Evict least-recently-used tracks",
-						onClick = {
-							showDeleteMenu = false
-							isEvicting = true
-							playbackManager.performEviction { count ->
-								isEvicting = false
+			Column {
+				Row(
+					modifier = Modifier
+						.fillMaxWidth()
+						.clickable { showDeleteMenu = !showDeleteMenu }
+						.padding(horizontal = 16.dp, vertical = 14.dp),
+					verticalAlignment = Alignment.CenterVertically
+				) {
+					Text(
+						text = "Delete",
+						style = MaterialTheme.typography.titleMedium,
+						color = MaterialTheme.colorScheme.error
+					)
+					Spacer(modifier = Modifier.weight(1f))
+					Text(
+						text = if (showDeleteMenu) "▴" else "▾",
+						style = MaterialTheme.typography.titleMedium,
+						color = MaterialTheme.colorScheme.onSurfaceVariant
+					)
+				}
+				
+				AnimatedVisibility(visible = showDeleteMenu) {
+					Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+						DeleteOption(
+							title = "Trim to cache limit",
+							subtitle = "Evict least-recently-used tracks",
+							onClick = {
+								showDeleteMenu = false
+								isEvicting = true
+								playbackManager.performEviction { count ->
+									isEvicting = false
+									scope.launch(Dispatchers.IO) {
+										val breakdown = playbackManager.getCacheSizeBreakdown()
+										withContext(Dispatchers.Main) {
+											cacheBreakdown = breakdown
+											Toast.makeText(
+												context, "Evicted $count tracks", Toast.LENGTH_SHORT
+											).show()
+										}
+									}
+								}
+							}
+						)
+						HorizontalDivider()
+						DeleteOption(
+							title = "Unfinished downloads",
+							subtitle = "Partial files, favourites kept",
+							onClick = {
+								showDeleteMenu = false
 								scope.launch(Dispatchers.IO) {
+									playbackManager.deletePartialFiles(excludeFavourites = true)
 									val breakdown = playbackManager.getCacheSizeBreakdown()
 									withContext(Dispatchers.Main) {
 										cacheBreakdown = breakdown
 										Toast.makeText(
-											context, "Evicted $count tracks", Toast.LENGTH_SHORT
+											context,
+											"Unfinished downloads removed (favourites kept)",
+											Toast.LENGTH_SHORT
 										).show()
 									}
 								}
 							}
-						}
-					)
-					DeleteOption(
-						title = "Unfinished downloads",
-						subtitle = "Partial files, favourites kept",
-						onClick = {
-							showDeleteMenu = false
-							scope.launch(Dispatchers.IO) {
-								playbackManager.deletePartialFiles(excludeFavourites = true)
-								val breakdown = playbackManager.getCacheSizeBreakdown()
-								withContext(Dispatchers.Main) {
-									cacheBreakdown = breakdown
-									Toast.makeText(
-										context,
-										"Unfinished downloads removed (favourites kept)",
-										Toast.LENGTH_SHORT
-									).show()
+						)
+						HorizontalDivider()
+						DeleteOption(
+							title = "All downloaded tracks",
+							subtitle = "Favourites kept",
+							danger = true,
+							onClick = {
+								showDeleteMenu = false
+								scope.launch(Dispatchers.IO) {
+									playbackManager.deleteAllTracks(excludeFavourites = true)
+									val breakdown = playbackManager.getCacheSizeBreakdown()
+									withContext(Dispatchers.Main) {
+										cacheBreakdown = breakdown
+										Toast.makeText(
+											context, "All tracks deleted (favourites kept)",
+											Toast.LENGTH_SHORT
+										).show()
+									}
 								}
 							}
-						}
-					)
-					DeleteOption(
-						title = "All downloaded tracks",
-						subtitle = "Favourites kept",
-						danger = true,
-						onClick = {
-							showDeleteMenu = false
-							scope.launch(Dispatchers.IO) {
-								playbackManager.deleteAllTracks(excludeFavourites = true)
-								val breakdown = playbackManager.getCacheSizeBreakdown()
-								withContext(Dispatchers.Main) {
-									cacheBreakdown = breakdown
-									Toast.makeText(
-										context, "All tracks deleted (favourites kept)",
-										Toast.LENGTH_SHORT
-									).show()
+						)
+						HorizontalDivider()
+						DeleteOption(
+							title = "Favourite tracks",
+							subtitle = "Downloaded favourites only",
+							danger = true,
+							onClick = {
+								showDeleteMenu = false
+								scope.launch(Dispatchers.IO) {
+									playbackManager.deleteFavouriteTracks()
+									val breakdown = playbackManager.getCacheSizeBreakdown()
+									withContext(Dispatchers.Main) {
+										cacheBreakdown = breakdown
+										Toast.makeText(
+											context, "Favourite tracks deleted", Toast.LENGTH_SHORT
+										).show()
+									}
 								}
 							}
-						}
-					)
-					DeleteOption(
-						title = "Favourite tracks",
-						subtitle = "Downloaded favourites only",
-						danger = true,
-						onClick = {
-							showDeleteMenu = false
-							scope.launch(Dispatchers.IO) {
-								playbackManager.deleteFavouriteTracks()
-								val breakdown = playbackManager.getCacheSizeBreakdown()
-								withContext(Dispatchers.Main) {
-									cacheBreakdown = breakdown
-									Toast.makeText(
-										context, "Favourite tracks deleted", Toast.LENGTH_SHORT
-									).show()
-								}
+						)
+						HorizontalDivider()
+						DeleteOption(
+							title = "Reset everything",
+							subtitle = "Metadata, cache state, audio and artwork",
+							danger = true,
+							onClick = {
+								showDeleteMenu = false
+								showResetConfirm = true
 							}
-						}
-					)
-					DeleteOption(
-						title = "Reset everything",
-						subtitle = "Metadata, cache state, audio and artwork",
-						danger = true,
-						onClick = {
-							showDeleteMenu = false
-							showResetConfirm = true
-						}
-					)
+						)
+						Spacer(modifier = Modifier.height(6.dp))
+					}
 				}
-			},
-			confirmButton = {
-				TextButton(onClick = { showDeleteMenu = false }) { Text("Cancel") }
 			}
-		)
+		}
 	}
 	
 	if (showResetConfirm) {
@@ -811,27 +815,26 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 private fun DeleteOption(
 	title: String, subtitle: String? = null, danger: Boolean = false, onClick: () -> Unit
 ) {
-	OutlinedButton(
-		onClick = onClick,
+	Column(
 		modifier = Modifier
 			.fillMaxWidth()
-			.padding(vertical = 2.dp),
-		colors = if (danger) ButtonDefaults.outlinedButtonColors(
-			contentColor = MaterialTheme.colorScheme.error
-		) else ButtonDefaults.outlinedButtonColors()
+			.clickable(onClick = onClick)
+			.padding(vertical = 10.dp)
 	) {
-		Column(
-			modifier = Modifier.fillMaxWidth(),
-			horizontalAlignment = Alignment.Start
-		) {
-			Text(title, style = MaterialTheme.typography.bodyLarge)
-			subtitle?.let {
-				Text(
-					it,
-					style = MaterialTheme.typography.bodySmall,
-					color = MaterialTheme.colorScheme.onSurfaceVariant
-				)
-			}
+		Text(
+			text = title,
+			style = MaterialTheme.typography.bodyLarge,
+			color = if (danger) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+		)
+		subtitle?.let {
+			Text(
+				text = it,
+				style = MaterialTheme.typography.bodySmall,
+				color = MaterialTheme.colorScheme.onSurfaceVariant
+			)
 		}
 	}
 }
+
+private fun formatMb(bytes: Long): String =
+	String.format("%.1f MB", bytes / (1024.0 * 1024.0))

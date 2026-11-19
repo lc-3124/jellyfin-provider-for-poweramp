@@ -25,6 +25,14 @@ enum class AudioQuality(
 			LOW -> ".aac64.cache"
 		}
 	
+	/** 统计里用的短标签。 */
+	val shortLabel: String
+		get() = when (this) {
+			LOSSLESS -> "Lossless"
+			MEDIUM -> "128k"
+			LOW -> "64k"
+		}
+	
 	/** 请求 Jellyfin 时用的参数。 */
 	val codec: String? get() = if (this == LOSSLESS) null else "aac"
 	

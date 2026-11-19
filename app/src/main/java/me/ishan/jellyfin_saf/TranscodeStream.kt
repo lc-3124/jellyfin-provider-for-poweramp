@@ -3,6 +3,7 @@ package me.ishan.jellyfin_saf
 import android.util.Log
 import org.jellyfin.sdk.model.UUID
 import java.io.File
+import java.io.IOException
 import java.nio.channels.FileChannel
 import java.nio.file.StandardOpenOption
 import kotlin.math.max
@@ -96,9 +97,12 @@ class TranscodeStream(
 		// 用下载进度而不是 file.length()：文件被 rename 之后路径已不存在
 		val available = downloaded
 		if (offset >= available) {
-			if (finished) return 0
-			// 还没下载到这段，且等超时了：当作 EOF，避免把播放线程永远挂住
-			return 0
+			if (finished) {
+				if (failed) throw IOException("transcode failed for $trackId")
+				return 0
+			}
+			// 等不到数据不能伪装成 EOF，否则播放器会静默跳下一首
+			throw IOException("timed out waiting for transcode data at $offset")
 		}
 		val toRead = min(size.toLong(), available - offset).toInt()
 		if (toRead <= 0) return 0
@@ -119,6 +123,8 @@ class TranscodeStream(
 	
 	fun isClosed(): Boolean = closed
 	
+	fun hasFailed(): Boolean = failed
+	
 	fun close() {
 		if (closed) return
 		closed = true
@@ -132,7 +138,7 @@ class TranscodeStream(
 	companion object {
 		private const val TAG = "TranscodeStream"
 		private const val READ_TIMEOUT_MS = 20_000L
-		private const val TAIL_PROBE_SIZE = 64 * 1024
-		private const val TAIL_PROBE_WINDOW = 256 * 1024L
+		private const val TAIL_PROBE_SIZE = 32 * 1024
+		private const val TAIL_PROBE_WINDOW = 64 * 1024L
 	}
 }

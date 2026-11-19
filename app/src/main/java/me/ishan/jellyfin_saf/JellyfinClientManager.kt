@@ -57,7 +57,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 			).build()
 		)
 	}.connectTimeout(10, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS)
-		.writeTimeout(15, TimeUnit.SECONDS).callTimeout(60, TimeUnit.SECONDS).connectionPool(
+		.writeTimeout(15, TimeUnit.SECONDS).connectionPool(
 			ConnectionPool(
 				maxIdleConnections = 5, keepAliveDuration = 5, TimeUnit.MINUTES
 			)
@@ -561,6 +561,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 		byteOffset: Long = 0L,
 		byteLength: Long? = null,
 		quality: AudioQuality = AudioQuality.LOSSLESS,
+		expectedBytes: Long? = null,
 		onProgress: ((Long) -> Unit)? = null,
 	): Boolean = withContext(Dispatchers.IO) {
 		val url = getStreamUrl(trackId, quality) ?: return@withContext false
@@ -605,7 +606,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 				var bytesRead: Int
 				var totalDownloaded = 0L
 				var lastProgressBoundary = 0L
-				val progressThreshold = 512 * 1024  // 512KB
+				val progressThreshold = 64 * 1024  // 64KB
 				
 				while (input.read(buffer).also { bytesRead = it } != -1) {
 					outputFile.writeAt(buffer, byteOffset + totalDownloaded, 0, bytesRead)
@@ -629,6 +630,19 @@ class JellyfinClientManager(private val context: Context? = null) {
 				
 				// Final progress update to ensure 	we report completion
 				onProgress?.invoke(byteOffset + totalDownloaded)
+				
+				// 服务器中途掐断转码时，read() 只会返回 -1；必须比对预期长度，
+				// 否则半首歌会被当成“下载完成”，播放到断点就静默跳歌。
+				if (expectedBytes != null && expectedBytes > 0L) {
+					val minimum = expectedBytes * 85 / 100
+					if (totalDownloaded < minimum) {
+						Log.e(
+							TAG,
+							"[$trackId] Short download: got $totalDownloaded of ~$expectedBytes bytes"
+						)
+						return@withContext false
+					}
+				}
 			}
 			true
 		} catch (e: InvalidStatusException) {

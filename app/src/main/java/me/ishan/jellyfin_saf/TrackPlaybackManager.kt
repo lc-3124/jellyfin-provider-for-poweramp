@@ -554,6 +554,7 @@ class TrackPlaybackManager(
 				byteOffset = 0L,
 				byteLength = null,
 				quality = quality,
+				expectedBytes = totalSize,
 				onProgress = { position -> stream.onProgress(position) }
 			)
 			try {
@@ -682,7 +683,33 @@ class TrackPlaybackManager(
 	 *  - 否则 -> 建一条空位图的 PARTIAL，让“Complete Partial Downloads”接手
 	 */
 	fun recoverCacheIndexAsync() {
-		scope.launch { recoverOrphanedCacheFiles() }
+		scope.launch {
+			recoverOrphanedCacheFiles()
+			cleanupTruncatedTranscodes()
+		}
+	}
+	
+	/** 老版本可能把被掐断的转码流标成 COMPLETE，启动时按估算大小清理掉。 */
+	private fun cleanupTruncatedTranscodes() {
+		try {
+			db.trackDao().getAllTrackStates().forEach { state ->
+				if (state.state != ContentState.COMPLETE) return@forEach
+				val cached = findCacheFile(state.id) ?: return@forEach
+				if (cached.quality == AudioQuality.LOSSLESS) return@forEach
+				val expected = estimateTranscodedSize(state.durationMs, cached.quality)
+					?: return@forEach
+				if (cached.sizeBytes < expected * 70 / 100) {
+					Log.w(
+						TAG,
+						"[${state.id}] Dropping truncated cache: ${cached.sizeBytes} < $expected"
+					)
+					cached.file.delete()
+					db.trackDao().deleteTrackStateById(state.id)
+				}
+			}
+		} catch (e: Exception) {
+			Log.e(TAG, "Truncated cache cleanup failed", e)
+		}
 	}
 	
 	private fun recoverOrphanedCacheFiles(): Int {

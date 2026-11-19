@@ -23,6 +23,16 @@ interface TrackDao {
     @Upsert
     fun insertTrack(track: TrackEntity)
 
+    /** 一张专辑/一页变更一次性写入，避免 18k 次独立事务。 */
+    @Upsert
+    fun insertTracks(tracks: List<TrackEntity>)
+
+    @Query("SELECT COUNT(*) FROM track_metadata")
+    fun getTrackCount(): Int
+
+    @Query("DELETE FROM track_metadata WHERE id IN (:ids)")
+    fun deleteTracksByIds(ids: List<UUID>)
+
     @Update
     fun updateTrack(track: TrackEntity)
 

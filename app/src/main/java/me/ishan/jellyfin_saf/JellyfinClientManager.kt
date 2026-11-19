@@ -10,9 +10,12 @@ import android.webkit.MimeTypeMap
 import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.ishan.jellyfin_saf.db.AppDatabase
+import me.ishan.jellyfin_saf.db.TrackDao
 import me.ishan.jellyfin_saf.db.TrackEntity
 import me.ishan.jellyfin_saf.db.TrackLyricsEntity
 import okhttp3.ConnectionPool
@@ -41,9 +44,14 @@ import org.jellyfin.sdk.model.api.BaseItemKind
 import org.jellyfin.sdk.model.api.ImageType
 import org.jellyfin.sdk.model.api.ItemFilter
 import org.jellyfin.sdk.model.api.ItemFields
+import org.jellyfin.sdk.model.api.request.GetItemsRequest
 import java.io.File
 import java.nio.channels.FileChannel
+import java.time.LocalDateTime
+import java.util.Collections
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.path.Path
 import kotlin.io.path.extension
 
@@ -390,6 +398,27 @@ class JellyfinClientManager(private val context: Context? = null) {
 	/**
 	 * Test connection to server
 	 */
+	/** 访问一次 /System/Info/Public，返回往返毫秒；失败返回 null。 */
+	suspend fun measureLatency(): Long? = withContext(Dispatchers.IO) {
+		val base = getUrl().trim().trimEnd('/')
+		if (base.isBlank()) return@withContext null
+		
+		try {
+			val request = Request.Builder()
+				.url("$base/System/Info/Public")
+				.header("Accept", "application/json")
+				.build()
+			val started = System.nanoTime()
+			httpClient.newCall(request).execute().use { response ->
+				if (!response.isSuccessful) return@withContext null
+			}
+			(System.nanoTime() - started) / 1_000_000
+		} catch (e: Exception) {
+			Log.w(TAG, "Latency check failed", e)
+			null
+		}
+	}
+	
 	suspend fun testConnection(): Boolean = withContext(Dispatchers.IO) {
 		if (serverUrl.isEmpty()) return@withContext false
 		
@@ -484,64 +513,42 @@ class JellyfinClientManager(private val context: Context? = null) {
 	}
 	
 	/**
-	 * Get tracks in an album
+	 * Get tracks in an album.
+	 *
+	 * [persist] = false 时只返回实体、不写库，供批量扫描使用（避免一首先一个事务）。
 	 */
-	suspend fun getAlbumTracks(albumId: UUID): List<TrackEntity> = withContext(Dispatchers.IO) {
+	suspend fun getAlbumTracks(
+		albumId: UUID, persist: Boolean = true
+	): List<TrackEntity> = withContext(Dispatchers.IO) {
 		val apiClient = getApiClient() ?: return@withContext emptyList()
 		val userId = currentUserId ?: return@withContext emptyList()
 		
 		try {
-			val result = apiClient.itemsApi.getItems(
-				userId = userId,
-				parentId = albumId,
-				includeItemTypes = setOf(BaseItemKind.AUDIO),
-				limit = 100,
-				fields = setOf(
-					ItemFields.GENRES, ItemFields.MEDIA_SOURCES, ItemFields.DATE_CREATED
-				),
-				enableImages = false,
-			)
-			
-			val tracks = ArrayList<TrackEntity>(result.content.totalRecordCount)
-			val items = result.content.items
-			items.forEach { track ->
-				if (track.mediaSources == null || track.mediaSources?.size == 0) {
-					return@forEach;
-				}
-				val path = track.path ?: track.mediaSources?.get(0)?.path
-				
-				val mimeType = if (path != null) {
-					val ext = Path(path).extension
-					MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "audio/$ext"
-				} else {
-					"null"
-				}
-				
-				val entity = TrackEntity(
-					id = track.id,
-					title = track.name.orEmpty(),
-					artist = track.artists?.joinToString(";"),
-					albumId = track.albumId,
-					album = track.album ?: "Unknown Album",
-					year = track.productionYear,
-					duration = track.runTimeTicks?.div(10000) ?: 0L,
-					size = track.mediaSources?.firstOrNull()?.size ?: 0L,
-					genres = track.genres?.joinToString(";"),
-					trackNumber = track.indexNumber,
-					numTracks = track.indexNumberEnd ?: 0,
-					discNumber = track.parentIndexNumber,
-					dateModified = track.dateCreated?.toString(),
-					mimeType = mimeType,
-					albumArtist = track.albumArtist ?: "",
-					dateCreated = track.premiereDate?.toString(),
-					isFavourite = track.userData?.isFavorite ?: false,
-					lastFetched = System.currentTimeMillis()
+			// 有些合集会超过 100 首（比如 216 首的 Listen 10），必须翻页
+			val tracks = ArrayList<TrackEntity>()
+			var startIndex = 0
+			while (true) {
+				val result = apiClient.itemsApi.getItems(
+					userId = userId,
+					parentId = albumId,
+					includeItemTypes = setOf(BaseItemKind.AUDIO),
+					limit = ALBUM_PAGE_SIZE,
+					startIndex = startIndex,
+					fields = setOf(
+						ItemFields.GENRES, ItemFields.MEDIA_SOURCES, ItemFields.DATE_CREATED
+					),
+					enableImages = false,
 				)
-				
-				db?.trackDao()?.insertTrack(entity)
-				tracks.add(entity);
+				val items = result.content.items
+				if (items.isEmpty()) break
+				tracks += items.mapNotNull { toTrackEntity(it) }
+				startIndex += items.size
+				if (items.size < ALBUM_PAGE_SIZE) break
 			}
 			
+			if (persist && tracks.isNotEmpty()) {
+				db?.trackDao()?.insertTracks(tracks)
+			}
 			tracks
 		} catch (e: InvalidStatusException) {
 			Log.w(TAG, "getAlbumTracks $albumId received ${e.status} code")
@@ -553,6 +560,228 @@ class JellyfinClientManager(private val context: Context? = null) {
 			Log.e(TAG, "Failed to get album tracks", e)
 			emptyList()
 		}
+	}
+	
+	/** 扫描模式。AUTO 用于登录后的首次同步，界面上的入口显式传 FULL / INCREMENTAL。 */
+	enum class ScanMode { AUTO, FULL, INCREMENTAL }
+	
+	/** 扫描结果。full=true 表示跑了一次全量，tracks 是库内总数。 */
+	data class LibrarySyncResult(
+		val full: Boolean,
+		val tracks: Int,
+		val albums: Int,
+		val removed: Int,
+		val elapsedMs: Long
+	)
+	
+	/**
+	 * 同步资料库。
+	 *
+	 * - 库里没有数据、数量对不上服务器（可能有删除/漏项）或 [forceFull] 时：全量扫描，
+	 *   4 路并发抓专辑、按专辑批量写库，最后删掉服务器上已不存在的曲目；
+	 * - 否则走增量：`MinDateLastSaved` 只取上次同步之后有变更的曲目，通常几秒。
+	 *
+	 * 游标存服务器本地时间（Jellyfin 对不带时区的时间串按服务器本地时间解析），
+	 * 留 [CURSOR_MARGIN_MINUTES] 分钟重叠防止扫描期间新写入的曲目被漏掉。
+	 */
+	suspend fun syncLibrary(
+		mode: ScanMode = ScanMode.AUTO,
+		shouldContinue: () -> Boolean = { true },
+		onProgress: suspend (done: Int, total: Int) -> Unit = { _, _ -> }
+	): LibrarySyncResult = withContext(Dispatchers.IO) {
+		val startedAt = System.currentTimeMillis()
+		val dao = db?.trackDao()
+		val stats = runCatching { getLibraryStats() }.getOrDefault(0 to 0)
+		val dbCount = dao?.getTrackCount() ?: 0
+		val cursor = prefs?.getString(KEY_SYNC_CURSOR, null)?.let {
+			runCatching { LocalDateTime.parse(it) }.getOrNull()
+		}
+		
+		// 服务器上总有极少数没有专辑归属的曲目（albumId=null），按专辑扫永远扫不到。
+		// 只要差距在容忍范围内就当作“一致”，避免每次扫描都被迫全量重扫。
+		val deficit = stats.second - dbCount
+		val consistent = dbCount > 0 && deficit in 0..ORPHAN_TOLERANCE
+		
+		// 旧版本升级上来：库里已经是完整的，但还没有游标，不必重扫一遍
+		if (mode != ScanMode.FULL && cursor == null && consistent) {
+			saveSyncCursor()
+			return@withContext LibrarySyncResult(
+				full = false, tracks = 0, albums = 0, removed = 0,
+				elapsedMs = System.currentTimeMillis() - startedAt
+			)
+		}
+		
+		val needFull = mode == ScanMode.FULL || cursor == null || dbCount == 0 ||
+			(mode == ScanMode.AUTO && !consistent)
+		if (needFull) {
+			fullScan(dao, shouldContinue, onProgress, startedAt)
+		} else {
+			incrementalScan(dao, cursor!!, stats, shouldContinue, onProgress, startedAt)
+		}
+	}
+	
+	private suspend fun fullScan(
+		dao: TrackDao?,
+		shouldContinue: () -> Boolean,
+		onProgress: suspend (Int, Int) -> Unit,
+		startedAt: Long
+	): LibrarySyncResult {
+		val albums = getAlbums(limit = 100000)
+		if (albums.isEmpty()) {
+			return LibrarySyncResult(true, 0, 0, 0, System.currentTimeMillis() - startedAt)
+		}
+		
+		val seen = Collections.synchronizedSet(HashSet<UUID>())
+		val next = AtomicInteger(0)
+		val done = AtomicInteger(0)
+		val lastProgressAt = AtomicLong(0)
+		
+		coroutineScope {
+			repeat(minOf(SYNC_WORKERS, albums.size)) {
+				launch(Dispatchers.IO) {
+					while (shouldContinue()) {
+						val index = next.getAndIncrement()
+						if (index >= albums.size) break
+						
+						val tracks = getAlbumTracks(albums[index].id, persist = false)
+						if (tracks.isNotEmpty()) {
+							dao?.insertTracks(tracks)
+							seen.addAll(tracks.map { it.id })
+						}
+						
+						val finished = done.incrementAndGet()
+						val now = System.currentTimeMillis()
+						if (now - lastProgressAt.get() > 250 || finished == albums.size) {
+							lastProgressAt.set(now)
+							onProgress(finished, albums.size)
+						}
+					}
+				}
+			}
+		}
+		
+		var removed = 0
+		if (shouldContinue() && dao != null && seen.isNotEmpty()) {
+			val stale = dao.getAllTrackIds().filter { it !in seen }
+			stale.chunked(400).forEach { dao.deleteTracksByIds(it) }
+			removed = stale.size
+		}
+		if (shouldContinue()) saveSyncCursor()
+		
+		Log.i(TAG, "Full scan: albums=${albums.size} tracks=${dao?.getTrackCount()} removed=$removed")
+		return LibrarySyncResult(
+			full = true,
+			tracks = dao?.getTrackCount() ?: 0,
+			albums = albums.size,
+			removed = removed,
+			elapsedMs = System.currentTimeMillis() - startedAt
+		)
+	}
+	
+	private suspend fun incrementalScan(
+		dao: TrackDao?,
+		cursor: LocalDateTime,
+		stats: Pair<Int, Int>,
+		shouldContinue: () -> Boolean,
+		onProgress: suspend (Int, Int) -> Unit,
+		startedAt: Long
+	): LibrarySyncResult {
+		val apiClient = getApiClient()
+			?: return LibrarySyncResult(false, 0, 0, 0, System.currentTimeMillis() - startedAt)
+		val userId = currentUserId
+			?: return LibrarySyncResult(false, 0, 0, 0, System.currentTimeMillis() - startedAt)
+		
+		var startIndex = 0
+		var changed = 0
+		var total = 0
+		while (shouldContinue()) {
+			val page = apiClient.itemsApi.getItems(
+				GetItemsRequest(
+					userId = userId,
+					includeItemTypes = setOf(BaseItemKind.AUDIO),
+					recursive = true,
+					minDateLastSaved = cursor,
+					startIndex = startIndex,
+					limit = INCREMENTAL_PAGE_SIZE,
+					fields = setOf(
+						ItemFields.MEDIA_SOURCES, ItemFields.GENRES, ItemFields.DATE_CREATED
+					),
+					enableImages = false
+				)
+			).content
+			
+			val items = page.items
+			if (items.isEmpty()) break
+			total = page.totalRecordCount ?: items.size
+			val tracks = items.mapNotNull { toTrackEntity(it) }
+			if (tracks.isNotEmpty()) {
+				dao?.insertTracks(tracks)
+				changed += tracks.size
+			}
+			startIndex += items.size
+			onProgress(minOf(startIndex, total), total)
+			if (items.size < INCREMENTAL_PAGE_SIZE) break
+		}
+		
+		// 增量看不到“删除”。本地比服务器还多，说明中间有删除，退回全量清理
+		if (shouldContinue() && dao != null && dao.getTrackCount() > stats.second) {
+			Log.i(TAG, "Incremental left more tracks than the server, falling back to full scan")
+			return fullScan(dao, shouldContinue, onProgress, startedAt)
+		}
+		if (shouldContinue()) saveSyncCursor()
+		
+		Log.i(TAG, "Incremental scan: changed=$changed")
+		return LibrarySyncResult(
+			full = false,
+			tracks = changed,
+			albums = 0,
+			removed = 0,
+			elapsedMs = System.currentTimeMillis() - startedAt
+		)
+	}
+	
+	private fun saveSyncCursor() {
+		prefs?.edit {
+			putString(
+				KEY_SYNC_CURSOR,
+				LocalDateTime.now().minusMinutes(CURSOR_MARGIN_MINUTES.toLong()).toString()
+			)
+			putLong(KEY_LAST_SYNC, System.currentTimeMillis())
+		}
+	}
+	
+	/** BaseItemDto → TrackEntity，扫描与按需加载共用。 */
+	private fun toTrackEntity(track: BaseItemDto): TrackEntity? {
+		if (track.mediaSources.isNullOrEmpty()) return null
+		val path = track.path ?: track.mediaSources?.firstOrNull()?.path
+		
+		val mimeType = if (path != null) {
+			val ext = Path(path).extension
+			MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "audio/$ext"
+		} else {
+			"null"
+		}
+		
+		return TrackEntity(
+			id = track.id,
+			title = track.name.orEmpty(),
+			artist = track.artists?.joinToString(";"),
+			albumId = track.albumId,
+			album = track.album ?: "Unknown Album",
+			year = track.productionYear,
+			duration = track.runTimeTicks?.div(10000) ?: 0L,
+			size = track.mediaSources?.firstOrNull()?.size ?: 0L,
+			genres = track.genres?.joinToString(";"),
+			trackNumber = track.indexNumber,
+			numTracks = track.indexNumberEnd ?: 0,
+			discNumber = track.parentIndexNumber,
+			dateModified = track.dateCreated?.toString(),
+			mimeType = mimeType,
+			albumArtist = track.albumArtist ?: "",
+			dateCreated = track.dateCreated?.toString(),
+			isFavourite = track.userData?.isFavorite ?: false,
+			lastFetched = System.currentTimeMillis()
+		)
 	}
 	
 	/**
@@ -1013,5 +1242,18 @@ class JellyfinClientManager(private val context: Context? = null) {
 		private const val KEY_MAX_CACHE_SIZE = "max_cache_size"
 		private const val KEY_QUALITY = "audio_quality"
 		private const val ALBUMS_CACHE_TTL_MS = 120_000L
+		
+		/** 并发抓专辑的 worker 数。这台服务器 ~3 请求/秒饱和，4 路刚好。 */
+		private const val SYNC_WORKERS = 4
+		private const val ALBUM_PAGE_SIZE = 100
+		
+		/** 没有专辑归属、按专辑扫永远扫不到的曲目最多容忍这么多。 */
+		private const val ORPHAN_TOLERANCE = 20
+		private const val INCREMENTAL_PAGE_SIZE = 500
+		private const val KEY_SYNC_CURSOR = "library_sync_cursor"
+		private const val KEY_LAST_SYNC = "library_last_sync"
+		
+		/** 游标回退量：覆盖扫描期间新写入的曲目，重复 upsert 无副作用。 */
+		private const val CURSOR_MARGIN_MINUTES = 30
 	}
 }

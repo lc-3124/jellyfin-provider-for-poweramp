@@ -51,6 +51,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -108,60 +109,59 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 	var completeProgress by remember { mutableStateOf("") }
 	var isSyncing by remember { mutableStateOf(false) }
 	var syncProgress by remember { mutableStateOf("") }
-	var showSyncMenu by remember { mutableStateOf(false) }
+	var showScanDialog by remember { mutableStateOf(false) }
+	var showSyncDialog by remember { mutableStateOf(false) }
+	var isTestingLatency by remember { mutableStateOf(false) }
+	var latencyMs by remember { mutableStateOf<Long?>(null) }
+	var latencyFailed by remember { mutableStateOf(false) }
 	var isPlanningPush by remember { mutableStateOf(false) }
 	var pendingPush by remember { mutableStateOf<PowerampSync.PushPlan?>(null) }
 	var favouriteCount by remember { mutableStateOf(0) }
 	var quality by remember { mutableStateOf(manager.getQuality()) }
-	var showDeleteMenu by remember { mutableStateOf(false) }
+	var showDeleteDialog by remember { mutableStateOf(false) }
 	var showResetConfirm by remember { mutableStateOf(false) }
 	var isScanning by remember { mutableStateOf(false) }
 	var scanProgress by remember { mutableStateOf("") }
 	var libraryStats by remember { mutableStateOf<Pair<Int, Int>?>(null) }
 	
-	val performScan = {
+	val performScan: (JellyfinClientManager.ScanMode) -> Unit = { mode ->
 		isScanning = true
 		scanProgress = t.scanStarting
-		scope.launch(Dispatchers.IO) {
+		scope.launch {
 			try {
-				val albums = manager.getAlbums(limit = 100000)
-				var tracksScanned = 0
-				for ((index, album) in albums.withIndex()) {
-					if (!isScanning) break // allow cancellation
-					
-					withContext(Dispatchers.Main) {
-						scanProgress = t.scanningAlbum(index + 1, albums.size, album.name ?: "")
+				val result = manager.syncLibrary(
+					mode = mode,
+					shouldContinue = { isScanning },
+					onProgress = { done, total ->
+						withContext(Dispatchers.Main) {
+							scanProgress = t.scanProgress(done, total)
+						}
 					}
-					val tracks = manager.getAlbumTracks(album.id)
-					for (track in tracks) {
-						manager.getTrackMetadata(track.id)
-						tracksScanned++
-					}
-				}
+				)
 				withContext(Dispatchers.Main) {
-					scanProgress = t.scanComplete(albums.size, tracksScanned)
+					scanProgress = if (result.full) {
+						t.scanComplete(result.albums, result.tracks)
+					} else {
+						t.scanIncremental(result.tracks)
+					}
 					Toast.makeText(context, scanProgress, Toast.LENGTH_LONG).show()
 					isScanning = false
-					
-					// 扫描完成后只重建目录树；收藏同步（拉取/推送）改为手动入口
-					scope.launch(Dispatchers.IO) {
-						val indexed = FolderLibrary.rebuild(context, manager)
-						withContext(Dispatchers.Main) {
-							if (indexed > 0) {
-								Toast.makeText(
-									context, t.foldersIndexed(indexed), Toast.LENGTH_SHORT
-								).show()
-							}
-						}
+				}
+				
+				// 扫描完成后重建目录树；收藏同步（拉取/推送）改为手动入口
+				val indexed = withContext(Dispatchers.IO) {
+					FolderLibrary.rebuild(context, manager)
+				}
+				val breakdown = withContext(Dispatchers.IO) {
+					playbackManager.getCacheSizeBreakdown()
+				}
+				withContext(Dispatchers.Main) {
+					if (indexed > 0) {
+						Toast.makeText(
+							context, t.foldersIndexed(indexed), Toast.LENGTH_SHORT
+						).show()
 					}
-					
-					// trigger a cache breakdown refresh
-					scope.launch(Dispatchers.IO) {
-						val breakdown = playbackManager.getCacheSizeBreakdown()
-						withContext(Dispatchers.Main) {
-							cacheBreakdown = breakdown
-						}
-					}
+					cacheBreakdown = breakdown
 				}
 			} catch (e: Exception) {
 				withContext(Dispatchers.Main) {
@@ -247,6 +247,18 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		}
 	}
 	
+	val refreshStats: () -> Unit = {
+		scope.launch(Dispatchers.IO) {
+			val breakdown = playbackManager.getCacheSizeBreakdown()
+			val favourites = AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
+			withContext(Dispatchers.Main) {
+				cacheBreakdown = breakdown
+				favouriteCount = favourites
+				Toast.makeText(context, t.statsRefreshed, Toast.LENGTH_SHORT).show()
+			}
+		}
+	}
+	
 	LaunchedEffect(Unit) {
 		scope.launch(Dispatchers.IO) {
 			// 目录树还没建过就补一次（不需要完整扫描）
@@ -291,7 +303,9 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		) {
 			Text(
 				text = t.brand,
-				style = MaterialTheme.typography.headlineMedium,
+				style = MaterialTheme.typography.titleLarge,
+				maxLines = 1,
+				overflow = TextOverflow.Ellipsis,
 				modifier = Modifier.weight(1f)
 			)
 			TextButton(onClick = { showInfo = true }) {
@@ -316,32 +330,79 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					Text(
 						text = "${t.user}: ${manager.getUsername()}",
 						style = MaterialTheme.typography.bodyMedium,
-						modifier = Modifier.padding(top = 8.dp)
+						modifier = Modifier.padding(top = 6.dp)
 					)
 					Text(
 						text = manager.getUrl(),
 						style = MaterialTheme.typography.bodySmall,
 						color = MaterialTheme.colorScheme.onSurfaceVariant
 					)
-				}
-			}
-			
-			Spacer(modifier = Modifier.height(16.dp))
-			
-			Button(
-				onClick = {
-					scope.launch {
-						manager.logout()
-						// 不在 SharedPreferences 里留明文密码
-						manager.clearStoredPassword()
-						password = ""
-						isAuthenticated = false
+					
+					Row(
+						modifier = Modifier
+							.fillMaxWidth()
+							.padding(top = 8.dp),
+						verticalAlignment = Alignment.CenterVertically
+					) {
+						TextButton(
+							onClick = {
+								scope.launch {
+									manager.logout()
+									// 不在 SharedPreferences 里留明文密码
+									manager.clearStoredPassword()
+									password = ""
+									latencyMs = null
+									latencyFailed = false
+									isAuthenticated = false
+								}
+							},
+							contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp)
+						) {
+							Text(
+								text = t.logout,
+								color = MaterialTheme.colorScheme.error
+							)
+						}
+						Spacer(modifier = Modifier.width(16.dp))
+						OutlinedButton(
+							onClick = {
+								isTestingLatency = true
+								latencyFailed = false
+								scope.launch {
+									val ms = manager.measureLatency()
+									isTestingLatency = false
+									latencyMs = ms
+									latencyFailed = ms == null
+								}
+							},
+							enabled = !isTestingLatency,
+							contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+						) {
+							if (isTestingLatency) {
+								CircularProgressIndicator(
+									modifier = Modifier.size(14.dp),
+									strokeWidth = 2.dp
+								)
+							} else {
+								Text(t.speedTest, style = MaterialTheme.typography.labelLarge)
+							}
+						}
+						Spacer(modifier = Modifier.weight(1f))
+						when {
+							isTestingLatency -> Unit
+							latencyFailed -> Text(
+								text = t.offline,
+								style = MaterialTheme.typography.bodyMedium,
+								color = MaterialTheme.colorScheme.error
+							)
+							latencyMs != null -> Text(
+								text = t.latencyText(latencyMs!!),
+								style = MaterialTheme.typography.bodyMedium,
+								color = MaterialTheme.colorScheme.primary
+							)
+						}
 					}
-				}, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(
-					containerColor = MaterialTheme.colorScheme.error
-				)
-			) {
-				Text(t.logout)
+				}
 			}
 		} else {
 			OutlinedTextField(
@@ -400,7 +461,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 								context, t.loginSuccess, Toast.LENGTH_SHORT
 							).show()
 							
-							performScan()
+							performScan(JellyfinClientManager.ScanMode.AUTO)
 						} else {
 							Toast.makeText(
 								context, t.loginFailed, Toast.LENGTH_LONG
@@ -443,15 +504,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 			}
 		}
 		
-		HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
-		
-		Text(
-			text = t.appSettings,
-			style = MaterialTheme.typography.titleMedium,
-			modifier = Modifier.align(Alignment.Start)
-		)
-		
-		Spacer(modifier = Modifier.height(16.dp))
+		HorizontalDivider(modifier = Modifier.padding(vertical = 20.dp))
 		
 		if (isAuthenticated) {
 			libraryStats?.let { stats ->
@@ -473,23 +526,14 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 			)
 		}
 		
-		// Scan Library Button
-		Button(
-			onClick = { performScan() },
-			modifier = Modifier.fillMaxWidth(),
+		// 扫描入口：点开弹窗选全量 / 增量
+		EntryCard(
+			title = t.scanLibrary,
 			enabled = !isScanning && !isEvicting && isAuthenticated,
-			colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-		) {
-			if (isScanning) {
-				CircularProgressIndicator(
-					modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onPrimary
-				)
-				Spacer(modifier = Modifier.width(8.dp))
-				Text(scanProgress)
-			} else {
-				Text(t.scanLibrary)
-			}
-		}
+			busy = isScanning,
+			progress = scanProgress,
+			onClick = { showScanDialog = true }
+		)
 		
 		Spacer(modifier = Modifier.height(16.dp))
 		
@@ -568,30 +612,17 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		Spacer(modifier = Modifier.height(16.dp))
 		
 		cacheBreakdown?.let { breakdown ->
-			CacheStatsTable(t = t, breakdown = breakdown, favouriteCount = favouriteCount)
+			CacheStatsTable(
+				t = t,
+				breakdown = breakdown,
+				favouriteCount = favouriteCount,
+				onRefresh = refreshStats
+			)
 		} ?: Text(
 			text = t.calculating,
 			style = MaterialTheme.typography.bodyMedium,
 			color = MaterialTheme.colorScheme.onSurfaceVariant
 		)
-		
-		Spacer(modifier = Modifier.height(4.dp))
-		
-		OutlinedButton(
-			onClick = {
-				scope.launch(Dispatchers.IO) {
-					val breakdown = playbackManager.getCacheSizeBreakdown()
-					val favourites = AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
-					withContext(Dispatchers.Main) {
-						cacheBreakdown = breakdown
-						favouriteCount = favourites
-						Toast.makeText(context, t.statsRefreshed, Toast.LENGTH_SHORT).show()
-					}
-				}
-			}, modifier = Modifier.fillMaxWidth()
-		) {
-			Text(t.refreshStats)
-		}
 		
 		Spacer(modifier = Modifier.height(8.dp))
 		
@@ -640,204 +671,192 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		
 		Spacer(modifier = Modifier.height(8.dp))
 		
-		// 同步点赞：入口在这里，点开才是“推送 / 拉取”
-		Card(
-			modifier = Modifier.fillMaxWidth(),
-			colors = CardDefaults.cardColors(
-				containerColor = MaterialTheme.colorScheme.surfaceVariant
-			)
-		) {
-			Column {
-				Row(
-					modifier = Modifier
-						.fillMaxWidth()
-						.clickable(enabled = !isSyncing && !isPlanningPush) {
-							showSyncMenu = !showSyncMenu
-						}
-						.padding(horizontal = 16.dp, vertical = 14.dp),
-					verticalAlignment = Alignment.CenterVertically
-				) {
-					Text(
-						text = t.syncLikes,
-						style = MaterialTheme.typography.titleMedium
-					)
-					Spacer(modifier = Modifier.weight(1f))
-					if (isSyncing || isPlanningPush) {
-						CircularProgressIndicator(
-							modifier = Modifier.size(18.dp),
-							strokeWidth = 2.dp
-						)
-					} else {
-						Text(
-							text = if (showSyncMenu) "▴" else "▾",
-							style = MaterialTheme.typography.titleMedium,
-							color = MaterialTheme.colorScheme.onSurfaceVariant
-						)
-					}
-				}
-				
-				AnimatedVisibility(visible = showSyncMenu) {
-					Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-						MenuOption(
-							title = t.push,
-							subtitle = t.pushDesc,
-							enabled = !isSyncing && !isPlanningPush && isAuthenticated,
-							onClick = {
-								showSyncMenu = false
-								startPush()
-							}
-						)
-						HorizontalDivider()
-						MenuOption(
-							title = t.pull,
-							subtitle = t.pullDesc,
-							enabled = !isSyncing && !isPlanningPush && isAuthenticated,
-							onClick = {
-								showSyncMenu = false
-								startPull()
-							}
-						)
-					}
-				}
-				
-				if (isSyncing || isPlanningPush) {
-					Text(
-						text = syncProgress.ifBlank { t.syncing },
-						style = MaterialTheme.typography.bodySmall,
-						color = MaterialTheme.colorScheme.onSurfaceVariant,
-						maxLines = 2,
-						modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
-					)
-				}
-			}
-		}
+		// 同步点赞：点开弹窗选推送 / 拉取
+		EntryCard(
+			title = t.syncLikes,
+			enabled = !isSyncing && !isPlanningPush && isAuthenticated,
+			busy = isSyncing || isPlanningPush,
+			progress = syncProgress.ifBlank { t.syncing },
+			onClick = { showSyncDialog = true }
+		)
 		
 		Spacer(modifier = Modifier.height(8.dp))
 		
-		// 破坏性操作收进一个可展开的区域，而不是一个按钮
-		Card(
-			modifier = Modifier.fillMaxWidth(),
-			colors = CardDefaults.cardColors(
-				containerColor = MaterialTheme.colorScheme.surfaceVariant
-			)
-		) {
-			Column {
-				Row(
-					modifier = Modifier
-						.fillMaxWidth()
-						.clickable { showDeleteMenu = !showDeleteMenu }
-						.padding(horizontal = 16.dp, vertical = 14.dp),
-					verticalAlignment = Alignment.CenterVertically
-				) {
-					Text(
-						text = t.delete,
-						style = MaterialTheme.typography.titleMedium,
-						color = MaterialTheme.colorScheme.error
+		// 破坏性操作：点开弹窗
+		EntryCard(
+			title = t.delete,
+			enabled = !isEvicting,
+			busy = false,
+			progress = "",
+			danger = true,
+			onClick = { showDeleteDialog = true }
+		)
+	}
+	
+	if (showScanDialog) {
+		AlertDialog(
+			onDismissRequest = { showScanDialog = false },
+			title = { Text(t.scanLibrary) },
+			text = {
+				Column {
+					MenuOption(
+						title = t.scanFull,
+						subtitle = t.scanFullDesc,
+						enabled = !isScanning && !isEvicting && isAuthenticated,
+						onClick = {
+							showScanDialog = false
+							performScan(JellyfinClientManager.ScanMode.FULL)
+						}
 					)
-					Spacer(modifier = Modifier.weight(1f))
-					Text(
-						text = if (showDeleteMenu) "▴" else "▾",
-						style = MaterialTheme.typography.titleMedium,
-						color = MaterialTheme.colorScheme.onSurfaceVariant
+					HorizontalDivider()
+					MenuOption(
+						title = t.scanIncrementalOnly,
+						subtitle = t.scanIncrementalOnlyDesc,
+						enabled = !isScanning && !isEvicting && isAuthenticated,
+						onClick = {
+							showScanDialog = false
+							performScan(JellyfinClientManager.ScanMode.INCREMENTAL)
+						}
 					)
 				}
-				
-				AnimatedVisibility(visible = showDeleteMenu) {
-					Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-						MenuOption(
-							title = t.trim,
-							subtitle = t.trimDesc,
-							onClick = {
-								showDeleteMenu = false
-								isEvicting = true
-								playbackManager.performEviction { count ->
-									isEvicting = false
-									scope.launch(Dispatchers.IO) {
-										val breakdown = playbackManager.getCacheSizeBreakdown()
-										withContext(Dispatchers.Main) {
-											cacheBreakdown = breakdown
-											Toast.makeText(
-												context, t.evicted(count), Toast.LENGTH_SHORT
-											).show()
-										}
-									}
-								}
-							}
-						)
-						HorizontalDivider()
-						MenuOption(
-							title = t.unfinished,
-							subtitle = t.unfinishedDesc,
-							onClick = {
-								showDeleteMenu = false
-								scope.launch(Dispatchers.IO) {
-									playbackManager.deletePartialFiles(excludeFavourites = true)
-									val breakdown = playbackManager.getCacheSizeBreakdown()
-									withContext(Dispatchers.Main) {
-										cacheBreakdown = breakdown
-										Toast.makeText(
-											context,
-											t.partialDeleted,
-											Toast.LENGTH_SHORT
-										).show()
-									}
-								}
-							}
-						)
-						HorizontalDivider()
-						MenuOption(
-							title = t.allTracks,
-							subtitle = t.allTracksDesc,
-							danger = true,
-							onClick = {
-								showDeleteMenu = false
-								scope.launch(Dispatchers.IO) {
-									playbackManager.deleteAllTracks(excludeFavourites = true)
-									val breakdown = playbackManager.getCacheSizeBreakdown()
-									withContext(Dispatchers.Main) {
-										cacheBreakdown = breakdown
-										Toast.makeText(
-											context, t.allDeleted,
-											Toast.LENGTH_SHORT
-										).show()
-									}
-								}
-							}
-						)
-						HorizontalDivider()
-						MenuOption(
-							title = t.favouriteTracks,
-							subtitle = t.favouriteDesc,
-							danger = true,
-							onClick = {
-								showDeleteMenu = false
-								scope.launch(Dispatchers.IO) {
-									playbackManager.deleteFavouriteTracks()
-									val breakdown = playbackManager.getCacheSizeBreakdown()
-									withContext(Dispatchers.Main) {
-										cacheBreakdown = breakdown
-										Toast.makeText(
-											context, t.favDeleted, Toast.LENGTH_SHORT
-										).show()
-									}
-								}
-							}
-						)
-						HorizontalDivider()
-						MenuOption(
-							title = t.resetAll,
-							subtitle = t.resetDesc,
-							danger = true,
-							onClick = {
-								showDeleteMenu = false
-								showResetConfirm = true
-							}
-						)
-						Spacer(modifier = Modifier.height(6.dp))
-					}
-				}
+			},
+			confirmButton = {
+				TextButton(onClick = { showScanDialog = false }) { Text(t.close) }
 			}
-		}
+		)
+	}
+	
+	if (showSyncDialog) {
+		AlertDialog(
+			onDismissRequest = { showSyncDialog = false },
+			title = { Text(t.syncLikes) },
+			text = {
+				Column {
+					MenuOption(
+						title = t.push,
+						subtitle = t.pushDesc,
+						enabled = !isSyncing && !isPlanningPush && isAuthenticated,
+						onClick = {
+							showSyncDialog = false
+							startPush()
+						}
+					)
+					HorizontalDivider()
+					MenuOption(
+						title = t.pull,
+						subtitle = t.pullDesc,
+						enabled = !isSyncing && !isPlanningPush && isAuthenticated,
+						onClick = {
+							showSyncDialog = false
+							startPull()
+						}
+					)
+				}
+			},
+			confirmButton = {
+				TextButton(onClick = { showSyncDialog = false }) { Text(t.close) }
+			}
+		)
+	}
+	
+	if (showDeleteDialog) {
+		AlertDialog(
+			onDismissRequest = { showDeleteDialog = false },
+			title = { Text(t.delete) },
+			text = {
+				Column {
+					MenuOption(
+						title = t.trim,
+						subtitle = t.trimDesc,
+						onClick = {
+							showDeleteDialog = false
+							isEvicting = true
+							playbackManager.performEviction { count ->
+								isEvicting = false
+								scope.launch(Dispatchers.IO) {
+									val breakdown = playbackManager.getCacheSizeBreakdown()
+									withContext(Dispatchers.Main) {
+										cacheBreakdown = breakdown
+										Toast.makeText(
+											context, t.evicted(count), Toast.LENGTH_SHORT
+										).show()
+									}
+								}
+							}
+						}
+					)
+					HorizontalDivider()
+					MenuOption(
+						title = t.unfinished,
+						subtitle = t.unfinishedDesc,
+						onClick = {
+							showDeleteDialog = false
+							scope.launch(Dispatchers.IO) {
+								playbackManager.deletePartialFiles(excludeFavourites = true)
+								val breakdown = playbackManager.getCacheSizeBreakdown()
+								withContext(Dispatchers.Main) {
+									cacheBreakdown = breakdown
+									Toast.makeText(
+										context, t.partialDeleted, Toast.LENGTH_SHORT
+									).show()
+								}
+							}
+						}
+					)
+					HorizontalDivider()
+					MenuOption(
+						title = t.allTracks,
+						subtitle = t.allTracksDesc,
+						danger = true,
+						onClick = {
+							showDeleteDialog = false
+							scope.launch(Dispatchers.IO) {
+								playbackManager.deleteAllTracks(excludeFavourites = true)
+								val breakdown = playbackManager.getCacheSizeBreakdown()
+								withContext(Dispatchers.Main) {
+									cacheBreakdown = breakdown
+									Toast.makeText(
+										context, t.allDeleted, Toast.LENGTH_SHORT
+									).show()
+								}
+							}
+						}
+					)
+					HorizontalDivider()
+					MenuOption(
+						title = t.favouriteTracks,
+						subtitle = t.favouriteDesc,
+						danger = true,
+						onClick = {
+							showDeleteDialog = false
+							scope.launch(Dispatchers.IO) {
+								playbackManager.deleteFavouriteTracks()
+								val breakdown = playbackManager.getCacheSizeBreakdown()
+								withContext(Dispatchers.Main) {
+									cacheBreakdown = breakdown
+									Toast.makeText(
+										context, t.favDeleted, Toast.LENGTH_SHORT
+									).show()
+								}
+							}
+						}
+					)
+					HorizontalDivider()
+					MenuOption(
+						title = t.resetAll,
+						subtitle = t.resetDesc,
+						danger = true,
+						onClick = {
+							showDeleteDialog = false
+							showResetConfirm = true
+						}
+					)
+				}
+			},
+			confirmButton = {
+				TextButton(onClick = { showDeleteDialog = false }) { Text(t.close) }
+			}
+		)
 	}
 	
 	if (showInfo) {
@@ -920,6 +939,62 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun EntryCard(
+	title: String,
+	enabled: Boolean = true,
+	busy: Boolean = false,
+	progress: String = "",
+	danger: Boolean = false,
+	onClick: () -> Unit
+) {
+	Card(
+		modifier = Modifier.fillMaxWidth(),
+		colors = CardDefaults.cardColors(
+			containerColor = MaterialTheme.colorScheme.surfaceVariant
+		)
+	) {
+		Column {
+			Row(
+				modifier = Modifier
+					.fillMaxWidth()
+					.clickable(enabled = enabled, onClick = onClick)
+					.padding(horizontal = 16.dp, vertical = 12.dp),
+				verticalAlignment = Alignment.CenterVertically
+			) {
+				Text(
+					text = title,
+					style = MaterialTheme.typography.titleMedium,
+					color = if (danger) MaterialTheme.colorScheme.error
+					else MaterialTheme.colorScheme.onSurface
+				)
+				Spacer(modifier = Modifier.weight(1f))
+				if (busy) {
+					CircularProgressIndicator(
+						modifier = Modifier.size(16.dp),
+						strokeWidth = 2.dp
+					)
+				} else {
+					Text(
+						text = "›",
+						style = MaterialTheme.typography.titleMedium,
+						color = MaterialTheme.colorScheme.onSurfaceVariant
+					)
+				}
+			}
+			if (busy && progress.isNotBlank()) {
+				Text(
+					text = progress,
+					style = MaterialTheme.typography.bodySmall,
+					color = MaterialTheme.colorScheme.onSurfaceVariant,
+					maxLines = 2,
+					modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp)
+				)
+			}
+		}
+	}
+}
+
+@Composable
 private fun MenuOption(
 	title: String,
 	subtitle: String? = null,
@@ -960,12 +1035,15 @@ private fun formatMb(bytes: Long): String =
 private fun CacheStatsTable(
 	t: UiStrings,
 	breakdown: TrackPlaybackManager.CacheSizeBreakdown,
-	favouriteCount: Int
+	favouriteCount: Int,
+	onRefresh: () -> Unit
 ) {
 	val audioBytes = breakdown.partialFilesSize + breakdown.completeFilesSize
 	val songs = breakdown.completeSongsNum + breakdown.partialSongsNum
 	Card(
-		modifier = Modifier.fillMaxWidth(),
+		modifier = Modifier
+			.fillMaxWidth()
+			.clickable(onClick = onRefresh),
 		colors = CardDefaults.cardColors(
 			containerColor = MaterialTheme.colorScheme.surfaceVariant
 		)
@@ -975,13 +1053,13 @@ private fun CacheStatsTable(
 				text = t.cachedTotal(formatGib(audioBytes), songs),
 				style = MaterialTheme.typography.titleMedium,
 				fontWeight = FontWeight.Bold,
-				modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+				modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
 			)
 			HorizontalDivider()
 			Row(
 				modifier = Modifier
 					.fillMaxWidth()
-					.padding(vertical = 12.dp)
+					.padding(vertical = 8.dp)
 			) {
 				listOf(AudioQuality.LOSSLESS, AudioQuality.MEDIUM, AudioQuality.LOW).forEach { q ->
 					Column(
@@ -1009,7 +1087,7 @@ private fun CacheStatsTable(
 			Row(
 				modifier = Modifier
 					.fillMaxWidth()
-					.padding(horizontal = 16.dp, vertical = 10.dp)
+					.padding(horizontal = 14.dp, vertical = 7.dp)
 			) {
 				Text(
 					text = t.favouritesLabel,
@@ -1022,30 +1100,19 @@ private fun CacheStatsTable(
 			Row(
 				modifier = Modifier
 					.fillMaxWidth()
-					.padding(horizontal = 16.dp, vertical = 10.dp)
+					.padding(horizontal = 14.dp, vertical = 7.dp)
 			) {
-				Column(modifier = Modifier.weight(1f)) {
-					Text(
-						text = t.artwork,
-						style = MaterialTheme.typography.bodySmall,
-						color = MaterialTheme.colorScheme.onSurfaceVariant
-					)
-					Text(
-						text = formatMb(breakdown.albumArtsSize),
-						style = MaterialTheme.typography.bodyMedium
-					)
-				}
-				Column(modifier = Modifier.weight(1f)) {
-					Text(
-						text = t.database,
-						style = MaterialTheme.typography.bodySmall,
-						color = MaterialTheme.colorScheme.onSurfaceVariant
-					)
-					Text(
-						text = formatMb(breakdown.databaseSize),
-						style = MaterialTheme.typography.bodyMedium
-					)
-				}
+				Text(
+					text = "${t.artwork} ${formatMb(breakdown.albumArtsSize)}",
+					style = MaterialTheme.typography.bodySmall,
+					color = MaterialTheme.colorScheme.onSurfaceVariant,
+					modifier = Modifier.weight(1f)
+				)
+				Text(
+					text = "${t.database} ${formatMb(breakdown.databaseSize)}",
+					style = MaterialTheme.typography.bodySmall,
+					color = MaterialTheme.colorScheme.onSurfaceVariant
+				)
 			}
 		}
 	}

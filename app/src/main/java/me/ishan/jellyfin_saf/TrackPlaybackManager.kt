@@ -508,8 +508,9 @@ class TrackPlaybackManager(
 		val bitrate = quality.bitrate ?: return null
 		if (durationMs <= 0L) return null
 		val bytes = bitrate.toLong() * durationMs / 8000L
-		// 留 2% + 一个头的余量，宁可略大（读到真实 EOF 自然结束）
-		return bytes + bytes / 50 + 16 * 1024
+		// 实测 Jellyfin 的 AAC 输出比理论值大 1.2%~3.7%（ADTS 头 + 编码开销），
+		// 留 5% + 16KB，宁可略大，读到真实 EOF 自然结束
+		return bytes + bytes / 20 + 16 * 1024
 	}
 	
 	/**

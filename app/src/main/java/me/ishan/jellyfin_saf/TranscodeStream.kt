@@ -40,6 +40,9 @@ class TranscodeStream(
 	@Volatile
 	private var failed: Boolean = false
 	
+	private val readCount = java.util.concurrent.atomic.AtomicInteger(0)
+	private val openedAt = System.currentTimeMillis()
+	
 	fun onProgress(position: Long) {
 		synchronized(lock) {
 			downloaded = max(downloaded, position)
@@ -57,6 +60,24 @@ class TranscodeStream(
 	
 	fun read(data: ByteArray, offset: Long, size: Int): Int {
 		if (closed) return 0
+		
+		val n = readCount.incrementAndGet()
+		if (n <= 10) {
+			Log.d(
+				TAG,
+				"[$trackId] read#$n offset=$offset size=$size downloaded=$downloaded " +
+					"total=$totalSize t=${System.currentTimeMillis() - openedAt}ms"
+			)
+		}
+		
+		// 播放器常见的“读文件尾探测容器”行为：转码流是顺序的，等它下到末尾
+		// 就等于等整首。ADTS AAC 不需要尾部元数据，直接给 EOF 即可。
+		if (!finished && offset > downloaded && size <= TAIL_PROBE_SIZE &&
+			offset >= totalSize - TAIL_PROBE_WINDOW
+		) {
+			Log.d(TAG, "[$trackId] tail probe at $offset, answering EOF immediately")
+			return 0
+		}
 		
 		synchronized(lock) {
 			val deadline = System.currentTimeMillis() + READ_TIMEOUT_MS
@@ -111,5 +132,7 @@ class TranscodeStream(
 	companion object {
 		private const val TAG = "TranscodeStream"
 		private const val READ_TIMEOUT_MS = 20_000L
+		private const val TAIL_PROBE_SIZE = 64 * 1024
+		private const val TAIL_PROBE_WINDOW = 256 * 1024L
 	}
 }

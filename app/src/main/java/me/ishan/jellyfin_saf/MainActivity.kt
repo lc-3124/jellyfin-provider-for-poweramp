@@ -1,6 +1,7 @@
 package me.ishan.jellyfin_saf
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.os.Bundle
 import android.os.StrictMode
 import android.provider.DocumentsContract
@@ -48,6 +49,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -85,6 +88,12 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 	val context = LocalContext.current
 	val manager = remember { JellyfinClientManager(context) }
 	val playbackManager = remember { TrackPlaybackManagerSingleton.getInstance(context) }
+	val uiPrefs = remember { context.getSharedPreferences("ui", Context.MODE_PRIVATE) }
+	var language by remember {
+		mutableStateOf(AppLanguage.fromId(uiPrefs.getString("language", null)))
+	}
+	val t = remember(language) { AppLanguage.strings(language) }
+	var showInfo by remember { mutableStateOf(false) }
 	val scope = rememberCoroutineScope()
 	
 	var url by remember { mutableStateOf(manager.getUrl()) }
@@ -109,7 +118,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 	
 	val performScan = {
 		isScanning = true
-		scanProgress = "Starting scan..."
+		scanProgress = t.scanStarting
 		scope.launch(Dispatchers.IO) {
 			try {
 				val albums = manager.getAlbums(limit = 100000)
@@ -118,7 +127,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					if (!isScanning) break // allow cancellation
 					
 					withContext(Dispatchers.Main) {
-						scanProgress = "Scanning album ${index + 1}/${albums.size}: ${album.name}"
+						scanProgress = t.scanningAlbum(index + 1, albums.size, album.name ?: "")
 					}
 					val tracks = manager.getAlbumTracks(album.id)
 					for (track in tracks) {
@@ -127,8 +136,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					}
 				}
 				withContext(Dispatchers.Main) {
-					scanProgress =
-						"Scan complete! Cached metadata for ${albums.size} albums, $tracksScanned tracks."
+					scanProgress = t.scanComplete(albums.size, tracksScanned)
 					Toast.makeText(context, scanProgress, Toast.LENGTH_LONG).show()
 					isScanning = false
 					
@@ -142,7 +150,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 				}
 			} catch (e: Exception) {
 				withContext(Dispatchers.Main) {
-					scanProgress = "Scan failed: ${e.message}"
+					scanProgress = t.scanFailed(e.message ?: "")
 					Toast.makeText(context, scanProgress, Toast.LENGTH_LONG).show()
 					isScanning = false
 				}
@@ -186,11 +194,21 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		horizontalAlignment = Alignment.CenterHorizontally,
 		verticalArrangement = Arrangement.Top
 	) {
-		Text(
-			text = "Jellyfin Provider Configuration",
-			style = MaterialTheme.typography.headlineMedium,
-			modifier = Modifier.padding(top = 16.dp, bottom = 24.dp)
-		)
+		Row(
+			modifier = Modifier
+				.fillMaxWidth()
+				.padding(top = 16.dp, bottom = 16.dp),
+			verticalAlignment = Alignment.Top
+		) {
+			Text(
+				text = t.brand,
+				style = MaterialTheme.typography.headlineMedium,
+				modifier = Modifier.weight(1f)
+			)
+			TextButton(onClick = { showInfo = true }) {
+				Text(text = "ⓘ", style = MaterialTheme.typography.headlineSmall)
+			}
+		}
 		
 		if (isAuthenticated) {
 			Card(
@@ -202,12 +220,12 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					modifier = Modifier.padding(16.dp),
 				) {
 					Text(
-						text = "✓ Connected",
+						text = "✓ " + t.connected,
 						style = MaterialTheme.typography.titleLarge,
 						color = MaterialTheme.colorScheme.primary
 					)
 					Text(
-						text = "User: ${manager.getUsername()}",
+						text = "${t.user}: ${manager.getUsername()}",
 						style = MaterialTheme.typography.bodyMedium,
 						modifier = Modifier.padding(top = 8.dp)
 					)
@@ -234,13 +252,13 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					containerColor = MaterialTheme.colorScheme.error
 				)
 			) {
-				Text("Logout")
+				Text(t.logout)
 			}
 		} else {
 			OutlinedTextField(
 				value = url,
 				onValueChange = { url = it },
-				label = { Text("Jellyfin Server URL") },
+				label = { Text(t.urlLabel) },
 				placeholder = { Text("https://jellyfin.example.com") },
 				modifier = Modifier.fillMaxWidth(),
 				singleLine = true
@@ -251,7 +269,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 			OutlinedTextField(
 				value = username,
 				onValueChange = { username = it },
-				label = { Text("Username") },
+				label = { Text(t.usernameLabel) },
 				modifier = Modifier.fillMaxWidth(),
 				singleLine = true
 			)
@@ -261,7 +279,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 			OutlinedTextField(
 				value = password,
 				onValueChange = { password = it },
-				label = { Text("Password") },
+				label = { Text(t.passwordLabel) },
 				modifier = Modifier.fillMaxWidth(),
 				visualTransformation = PasswordVisualTransformation(),
 				singleLine = true
@@ -290,13 +308,13 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 							)
 							
 							Toast.makeText(
-								context, "Login Successful! Starting scan...", Toast.LENGTH_SHORT
+								context, t.loginSuccess, Toast.LENGTH_SHORT
 							).show()
 							
 							performScan()
 						} else {
 							Toast.makeText(
-								context, "Login Failed. Check your credentials.", Toast.LENGTH_LONG
+								context, t.loginFailed, Toast.LENGTH_LONG
 							).show()
 						}
 					}
@@ -309,9 +327,9 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 						modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onPrimary
 					)
 					Spacer(modifier = Modifier.width(8.dp))
-					Text("Connecting...")
+					Text(t.connecting)
 				} else {
-					Text("Save and Login")
+					Text(t.saveLogin)
 				}
 			}
 			
@@ -326,20 +344,20 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 						
 						Toast.makeText(
 							context,
-							if (success) "Connection OK!" else "Connection Failed!",
+							if (success) t.connOk else t.connFail,
 							Toast.LENGTH_SHORT
 						).show()
 					}
 				}, enabled = !isLoading && url.isNotBlank(), modifier = Modifier.fillMaxWidth()
 			) {
-				Text("Test Connection")
+				Text(t.testConnection)
 			}
 		}
 		
 		HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
 		
 		Text(
-			text = "App Settings",
+			text = t.appSettings,
 			style = MaterialTheme.typography.titleMedium,
 			modifier = Modifier.align(Alignment.Start)
 		)
@@ -349,7 +367,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		if (isAuthenticated) {
 			libraryStats?.let { stats ->
 				Text(
-					text = "Server Library: ${stats.first} Albums, ${stats.second} Tracks",
+					text = t.libraryStats(stats.first, stats.second),
 					style = MaterialTheme.typography.bodyMedium,
 					color = MaterialTheme.colorScheme.onSurfaceVariant,
 					modifier = Modifier
@@ -357,7 +375,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 						.align(Alignment.Start)
 				)
 			} ?: Text(
-				text = "Fetching library stats...",
+				text = t.fetchingStats,
 				style = MaterialTheme.typography.bodyMedium,
 				color = MaterialTheme.colorScheme.onSurfaceVariant,
 				modifier = Modifier
@@ -380,14 +398,14 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 				Spacer(modifier = Modifier.width(8.dp))
 				Text(scanProgress)
 			} else {
-				Text("Scan Library")
+				Text(t.scanLibrary)
 			}
 		}
 		
 		Spacer(modifier = Modifier.height(16.dp))
 		
 				Text(
-			text = "Audio quality",
+			text = t.audioQuality,
 			style = MaterialTheme.typography.titleSmall,
 			modifier = Modifier.align(Alignment.Start)
 		)
@@ -399,9 +417,9 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 			AudioQuality.entries.reversed().forEach { option ->
 				val selected = quality == option
 				val label = when (option) {
-					AudioQuality.LOSSLESS -> "Lossless"
-					AudioQuality.MEDIUM -> "Medium"
-					AudioQuality.LOW -> "Low"
+					AudioQuality.LOSSLESS -> t.lossless
+					AudioQuality.MEDIUM -> t.medium
+					AudioQuality.LOW -> t.low
 				}
 				val onClick = {
 					quality = option
@@ -428,9 +446,9 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		}
 		Text(
 			text = when (quality) {
-				AudioQuality.LOSSLESS -> "Original file, no re-encoding"
-				AudioQuality.MEDIUM -> "AAC 128 kbps, transcoded on demand"
-				AudioQuality.LOW -> "AAC 64 kbps, transcoded on demand"
+				AudioQuality.LOSSLESS -> t.qualityLossless
+				AudioQuality.MEDIUM -> t.qualityMedium
+				AudioQuality.LOW -> t.qualityLow
 			},
 			style = MaterialTheme.typography.bodySmall,
 			color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -452,7 +470,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					}
 				}
 			},
-			label = { Text("Max Cache Size (MB)") },
+			label = { Text(t.maxCacheSize) },
 			modifier = Modifier.fillMaxWidth(),
 			keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
 			singleLine = true
@@ -461,55 +479,9 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		Spacer(modifier = Modifier.height(16.dp))
 		
 		cacheBreakdown?.let { breakdown ->
-			Column(modifier = Modifier.fillMaxWidth()) {
-				val songs = breakdown.completeSongsNum + breakdown.partialSongsNum
-				Text(
-					text = "Cached ${formatMb(breakdown.totalSize)} · $songs songs",
-					style = MaterialTheme.typography.titleMedium
-				)
-				val qualityParts = AudioQuality.entries.reversed().mapNotNull { q ->
-					val count = breakdown.qualityCounts[q] ?: 0
-					if (count > 0) "${q.shortLabel} $count" else null
-				}
-				if (qualityParts.isNotEmpty()) {
-					Text(
-						text = "Quality: " + qualityParts.joinToString(" · "),
-						style = MaterialTheme.typography.bodySmall,
-						color = MaterialTheme.colorScheme.onSurfaceVariant,
-						modifier = Modifier.padding(top = 2.dp)
-					)
-				}
-				Text(
-					text = "Artwork ${formatMb(breakdown.albumArtsSize)} · " +
-						"Database ${formatMb(breakdown.databaseSize)}",
-					style = MaterialTheme.typography.bodySmall,
-					color = MaterialTheme.colorScheme.onSurfaceVariant
-				)
-				if (breakdown.partialSongsNum > 0) {
-					Text(
-						text = "Unfinished: ${breakdown.partialSongsNum} songs · " +
-							formatMb(breakdown.partialFilesSize),
-						style = MaterialTheme.typography.bodySmall,
-						color = MaterialTheme.colorScheme.onSurfaceVariant
-					)
-				}
-				if (breakdown.favouriteSongsNum > 0) {
-					Text(
-						text = "Favourites: ${breakdown.favouriteSongsNum} songs · " +
-							formatMb(breakdown.favouriteFilesSize) + " (included above)",
-						style = MaterialTheme.typography.bodySmall,
-						color = MaterialTheme.colorScheme.onSurfaceVariant
-					)
-				}
-				Text(
-					text = "Liked on Jellyfin: $favouriteCount songs",
-					style = MaterialTheme.typography.bodySmall,
-					color = MaterialTheme.colorScheme.onSurfaceVariant,
-					modifier = Modifier.padding(top = 2.dp)
-				)
-			}
+			CacheStatsTable(t = t, breakdown = breakdown, favouriteCount = favouriteCount)
 		} ?: Text(
-			text = "Calculating cache size...",
+			text = t.calculating,
 			style = MaterialTheme.typography.bodyMedium,
 			color = MaterialTheme.colorScheme.onSurfaceVariant
 		)
@@ -528,12 +500,12 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					withContext(Dispatchers.Main) {
 						cacheBreakdown = breakdown
 						favouriteCount = favourites
-						Toast.makeText(context, "Cache stats refreshed", Toast.LENGTH_SHORT).show()
+						Toast.makeText(context, t.statsRefreshed, Toast.LENGTH_SHORT).show()
 					}
 				}
 			}, modifier = Modifier.fillMaxWidth()
 		) {
-			Text("Refresh Cache Stats")
+			Text(t.refreshStats)
 		}
 		
 		Spacer(modifier = Modifier.height(8.dp))
@@ -542,12 +514,12 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		Button(
 			onClick = {
 				isCompleting = true
-				completeProgress = "Preparing..."
+				completeProgress = t.preparing
 				scope.launch {
 					val result = playbackManager.completePartialTracks(manager) { done, total, title ->
 						withContext(Dispatchers.Main) {
 							completeProgress = if (total > 0) {
-								"Completing $done/$total${if (title.isNotBlank()) ": $title" else ""}"
+								t.completing(done, total, title)
 							} else ""
 						}
 					}
@@ -558,7 +530,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					isCompleting = false
 					Toast.makeText(
 						context,
-						"Completed ${result.completed}, failed ${result.failed}, skipped ${result.skipped}",
+						t.completedSummary(result.completed, result.failed, result.skipped),
 						Toast.LENGTH_LONG
 					).show()
 				}
@@ -573,11 +545,11 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 				)
 				Spacer(modifier = Modifier.width(8.dp))
 				Text(
-					completeProgress.ifBlank { "Completing partial downloads..." },
+					completeProgress.ifBlank { t.completingShort },
 					maxLines = 1
 				)
 			} else {
-				Text("Complete Partial Downloads")
+				Text(t.completePartial)
 			}
 		}
 		
@@ -587,14 +559,14 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		Button(
 			onClick = {
 				isSyncing = true
-				syncProgress = "Reading Poweramp..."
+				syncProgress = t.readingPoweramp
 				scope.launch {
 					val result = PowerampSync.sync(context, manager)
 					if (result.needsPermission) {
 						isSyncing = false
 						Toast.makeText(
 							context,
-							"Grant Poweramp data access, then tap Sync again",
+							t.grantAccess,
 							Toast.LENGTH_LONG
 						).show()
 						return@launch
@@ -602,12 +574,12 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					if (result.error != null) {
 						isSyncing = false
 						Toast.makeText(
-							context, "Sync failed: ${result.error}", Toast.LENGTH_LONG
+							context, t.syncFailed(result.error ?: ""), Toast.LENGTH_LONG
 						).show()
 						return@launch
 					}
 					syncProgress =
-						"Synced ${result.liked + result.unliked} likes, downloading favourites..."
+						t.syncedDownloading(result.liked + result.unliked)
 					val dl = playbackManager.downloadFavouriteTracks(manager, manager.getQuality()) { done, total, title ->
 						withContext(Dispatchers.Main) {
 							syncProgress = "Downloading $done/$total${
@@ -626,8 +598,10 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					isSyncing = false
 					Toast.makeText(
 						context,
-						"Likes: ${result.liked} added, ${result.unliked} removed. " +
-							"Downloads: ${dl.downloaded} new, ${dl.skipped} cached, ${dl.failed} failed",
+						t.syncSummary(
+							result.liked, result.unliked,
+							dl.downloaded, dl.skipped, dl.failed
+						),
 						Toast.LENGTH_LONG
 					).show()
 				}
@@ -641,9 +615,9 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onPrimary
 				)
 				Spacer(modifier = Modifier.width(8.dp))
-				Text(syncProgress.ifBlank { "Syncing..." }, maxLines = 1)
+				Text(syncProgress.ifBlank { t.syncing }, maxLines = 1)
 			} else {
-				Text("Sync Poweramp Likes")
+				Text(t.syncLikes)
 			}
 		}
 		
@@ -665,7 +639,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 					verticalAlignment = Alignment.CenterVertically
 				) {
 					Text(
-						text = "Delete",
+						text = t.delete,
 						style = MaterialTheme.typography.titleMedium,
 						color = MaterialTheme.colorScheme.error
 					)
@@ -680,8 +654,8 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 				AnimatedVisibility(visible = showDeleteMenu) {
 					Column(modifier = Modifier.padding(horizontal = 16.dp)) {
 						DeleteOption(
-							title = "Trim to cache limit",
-							subtitle = "Evict least-recently-used tracks",
+							title = t.trim,
+							subtitle = t.trimDesc,
 							onClick = {
 								showDeleteMenu = false
 								isEvicting = true
@@ -692,7 +666,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 										withContext(Dispatchers.Main) {
 											cacheBreakdown = breakdown
 											Toast.makeText(
-												context, "Evicted $count tracks", Toast.LENGTH_SHORT
+												context, t.evicted(count), Toast.LENGTH_SHORT
 											).show()
 										}
 									}
@@ -701,8 +675,8 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 						)
 						HorizontalDivider()
 						DeleteOption(
-							title = "Unfinished downloads",
-							subtitle = "Partial files, favourites kept",
+							title = t.unfinished,
+							subtitle = t.unfinishedDesc,
 							onClick = {
 								showDeleteMenu = false
 								scope.launch(Dispatchers.IO) {
@@ -712,7 +686,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 										cacheBreakdown = breakdown
 										Toast.makeText(
 											context,
-											"Unfinished downloads removed (favourites kept)",
+											t.partialDeleted,
 											Toast.LENGTH_SHORT
 										).show()
 									}
@@ -721,8 +695,8 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 						)
 						HorizontalDivider()
 						DeleteOption(
-							title = "All downloaded tracks",
-							subtitle = "Favourites kept",
+							title = t.allTracks,
+							subtitle = t.allTracksDesc,
 							danger = true,
 							onClick = {
 								showDeleteMenu = false
@@ -732,7 +706,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 									withContext(Dispatchers.Main) {
 										cacheBreakdown = breakdown
 										Toast.makeText(
-											context, "All tracks deleted (favourites kept)",
+											context, t.allDeleted,
 											Toast.LENGTH_SHORT
 										).show()
 									}
@@ -741,8 +715,8 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 						)
 						HorizontalDivider()
 						DeleteOption(
-							title = "Favourite tracks",
-							subtitle = "Downloaded favourites only",
+							title = t.favouriteTracks,
+							subtitle = t.favouriteDesc,
 							danger = true,
 							onClick = {
 								showDeleteMenu = false
@@ -752,7 +726,7 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 									withContext(Dispatchers.Main) {
 										cacheBreakdown = breakdown
 										Toast.makeText(
-											context, "Favourite tracks deleted", Toast.LENGTH_SHORT
+											context, t.favDeleted, Toast.LENGTH_SHORT
 										).show()
 									}
 								}
@@ -760,8 +734,8 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 						)
 						HorizontalDivider()
 						DeleteOption(
-							title = "Reset everything",
-							subtitle = "Metadata, cache state, audio and artwork",
+							title = t.resetAll,
+							subtitle = t.resetDesc,
 							danger = true,
 							onClick = {
 								showDeleteMenu = false
@@ -775,12 +749,24 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 		}
 	}
 	
+	if (showInfo) {
+		AppInfoDialog(
+			t = t,
+			language = language,
+			onLanguageChange = { selected ->
+				language = selected
+				uiPrefs.edit().putString("language", selected.id).apply()
+			},
+			onDismiss = { showInfo = false }
+		)
+	}
+	
 	if (showResetConfirm) {
 		AlertDialog(
 			onDismissRequest = { showResetConfirm = false },
-			title = { Text("Reset everything?") },
+			title = { Text(t.resetTitle) },
 			text = {
-				Text("This deletes all metadata, cache state, downloaded audio and artwork. It cannot be undone.")
+				Text(t.resetBody)
 			},
 			confirmButton = {
 				TextButton(
@@ -795,17 +781,17 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 							withContext(Dispatchers.Main) {
 								cacheBreakdown = breakdown
 								Toast.makeText(
-									context, "Database reset & cache cleared", Toast.LENGTH_SHORT
+									context, t.resetDone, Toast.LENGTH_SHORT
 								).show()
 							}
 						}
 					}
 				) {
-					Text("Reset", color = MaterialTheme.colorScheme.error)
+					Text(t.reset, color = MaterialTheme.colorScheme.error)
 				}
 			},
 			dismissButton = {
-				TextButton(onClick = { showResetConfirm = false }) { Text("Cancel") }
+				TextButton(onClick = { showResetConfirm = false }) { Text(t.cancel) }
 			}
 		)
 	}
@@ -838,3 +824,170 @@ private fun DeleteOption(
 
 private fun formatMb(bytes: Long): String =
 	String.format("%.1f MB", bytes / (1024.0 * 1024.0))
+
+
+@Composable
+private fun CacheStatsTable(
+	t: UiStrings,
+	breakdown: TrackPlaybackManager.CacheSizeBreakdown,
+	favouriteCount: Int
+) {
+	val audioBytes = breakdown.partialFilesSize + breakdown.completeFilesSize
+	val songs = breakdown.completeSongsNum + breakdown.partialSongsNum
+	Card(
+		modifier = Modifier.fillMaxWidth(),
+		colors = CardDefaults.cardColors(
+			containerColor = MaterialTheme.colorScheme.surfaceVariant
+		)
+	) {
+		Column {
+			Text(
+				text = t.cachedTotal(formatGib(audioBytes), songs),
+				style = MaterialTheme.typography.titleMedium,
+				fontWeight = FontWeight.Bold,
+				modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+			)
+			HorizontalDivider()
+			Row(
+				modifier = Modifier
+					.fillMaxWidth()
+					.padding(vertical = 12.dp)
+			) {
+				listOf(AudioQuality.LOSSLESS, AudioQuality.MEDIUM, AudioQuality.LOW).forEach { q ->
+					Column(
+						modifier = Modifier.weight(1f),
+						horizontalAlignment = Alignment.CenterHorizontally
+					) {
+						Text(
+							text = (breakdown.qualityCounts[q] ?: 0).toString(),
+							style = MaterialTheme.typography.titleMedium,
+							fontWeight = FontWeight.SemiBold
+						)
+						Text(
+							text = when (q) {
+								AudioQuality.LOSSLESS -> t.lossless
+								AudioQuality.MEDIUM -> t.medium
+								AudioQuality.LOW -> t.low
+							},
+							style = MaterialTheme.typography.bodySmall,
+							color = MaterialTheme.colorScheme.onSurfaceVariant
+						)
+					}
+				}
+			}
+			HorizontalDivider()
+			Row(
+				modifier = Modifier
+					.fillMaxWidth()
+					.padding(horizontal = 16.dp, vertical = 10.dp)
+			) {
+				Text(
+					text = t.favouritesLabel,
+					style = MaterialTheme.typography.bodyMedium,
+					modifier = Modifier.weight(1f)
+				)
+				Text(text = favouriteCount.toString(), style = MaterialTheme.typography.bodyMedium)
+			}
+			HorizontalDivider()
+			Row(
+				modifier = Modifier
+					.fillMaxWidth()
+					.padding(horizontal = 16.dp, vertical = 10.dp)
+			) {
+				Column(modifier = Modifier.weight(1f)) {
+					Text(
+						text = t.artwork,
+						style = MaterialTheme.typography.bodySmall,
+						color = MaterialTheme.colorScheme.onSurfaceVariant
+					)
+					Text(
+						text = formatMb(breakdown.albumArtsSize),
+						style = MaterialTheme.typography.bodyMedium
+					)
+				}
+				Column(modifier = Modifier.weight(1f)) {
+					Text(
+						text = t.database,
+						style = MaterialTheme.typography.bodySmall,
+						color = MaterialTheme.colorScheme.onSurfaceVariant
+					)
+					Text(
+						text = formatMb(breakdown.databaseSize),
+						style = MaterialTheme.typography.bodyMedium
+					)
+				}
+			}
+		}
+	}
+}
+
+@Composable
+private fun AppInfoDialog(
+	t: UiStrings,
+	language: AppLanguage,
+	onLanguageChange: (AppLanguage) -> Unit,
+	onDismiss: () -> Unit
+) {
+	val uriHandler = LocalUriHandler.current
+	AlertDialog(
+		onDismissRequest = onDismiss,
+		title = { Text(t.about) },
+		text = {
+			Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+				Text(t.language, style = MaterialTheme.typography.titleSmall)
+				AppLanguage.entries.forEach { option ->
+					Row(
+						modifier = Modifier
+							.fillMaxWidth()
+							.clickable { onLanguageChange(option) },
+						verticalAlignment = Alignment.CenterVertically
+					) {
+						RadioButton(
+							selected = language == option,
+							onClick = { onLanguageChange(option) }
+						)
+						Text(
+							text = when (option) {
+								AppLanguage.AUTO -> t.auto
+								AppLanguage.ENGLISH -> t.english
+								AppLanguage.CHINESE -> t.chinese
+								AppLanguage.JAPANESE -> t.japanese
+							}
+						)
+					}
+				}
+				HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+				Text(
+					text = t.originalAuthor,
+					color = MaterialTheme.colorScheme.primary,
+					modifier = Modifier
+						.fillMaxWidth()
+						.clickable {
+							uriHandler.openUri("https://github.com/ishanjain28/jellyfin-saf-provider")
+						}
+						.padding(vertical = 6.dp)
+				)
+				Text(
+					text = t.forkMaintainer,
+					color = MaterialTheme.colorScheme.primary,
+					modifier = Modifier
+						.fillMaxWidth()
+						.clickable { uriHandler.openUri("https://github.com/lc-3124") }
+						.padding(vertical = 6.dp)
+				)
+				Text(
+					text = t.creditsNote,
+					style = MaterialTheme.typography.bodySmall,
+					color = MaterialTheme.colorScheme.onSurfaceVariant,
+					modifier = Modifier.padding(top = 8.dp)
+				)
+			}
+		},
+		confirmButton = {
+			TextButton(onClick = onDismiss) { Text(t.close) }
+		}
+	)
+}
+
+private fun formatGib(bytes: Long): String =
+	String.format("%.2f GiB", bytes / (1024.0 * 1024.0 * 1024.0))

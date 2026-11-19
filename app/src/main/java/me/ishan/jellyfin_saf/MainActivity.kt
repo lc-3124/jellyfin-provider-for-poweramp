@@ -574,8 +574,10 @@ fun JellyfinSettings(modifier: Modifier = Modifier) {
 						playbackManager.getCacheSizeBreakdown()
 					}
 					cacheBreakdown = breakdown
-					favouriteCount =
+					// Room 不允许主线程访问数据库，必须切到 IO
+					favouriteCount = withContext(Dispatchers.IO) {
 						AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
+					}
 					isSyncing = false
 					Toast.makeText(
 						context,

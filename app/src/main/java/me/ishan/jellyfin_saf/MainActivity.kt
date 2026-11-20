@@ -1296,6 +1296,8 @@ private fun AppInfoDialog(
 	onDismiss: () -> Unit
 ) {
 	val uriHandler = LocalUriHandler.current
+	val context = LocalContext.current
+	val scope = rememberCoroutineScope()
 	AlertDialog(
 		onDismissRequest = onDismiss,
 		title = { Text(t.about) },
@@ -1338,6 +1340,22 @@ private fun AppInfoDialog(
 							onClick = { onStyleChange(option) }
 						)
 					}
+				}
+				HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+				TextButton(
+					onClick = {
+						scope.launch {
+							val path = withContext(Dispatchers.IO) { DiagLog.export(context) }
+							Toast.makeText(
+								context,
+								if (path != null) "${t.exportDiag}: $path" else t.exportFailed,
+								Toast.LENGTH_LONG
+							).show()
+						}
+					},
+					contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp)
+				) {
+					Text(t.exportDiag)
 				}
 				HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 				Text(

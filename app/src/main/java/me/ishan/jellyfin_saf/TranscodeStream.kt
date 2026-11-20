@@ -57,6 +57,7 @@ class TranscodeStream(
 			failed = !success
 			lock.notifyAll()
 		}
+		DiagLog.i("TRANSCODE", "[$trackId] finished success=$success bytes=$downloaded total=$totalSize")
 	}
 	
 	fun read(data: ByteArray, offset: Long, size: Int): Int {
@@ -93,6 +94,7 @@ class TranscodeStream(
 				return 0
 			}
 			// 等不到数据不能伪装成 EOF，否则播放器会静默跳下一首
+			DiagLog.i("TRANSCODE", "[$trackId] timeout offset=$offset downloaded=$available failed=$failed")
 			throw IOException("timed out waiting for transcode data at $offset")
 		}
 		val toRead = min(size.toLong(), available - offset).toInt()

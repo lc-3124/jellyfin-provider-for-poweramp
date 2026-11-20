@@ -112,7 +112,8 @@ class JellyfinClientManager(private val context: Context? = null) {
 	
 	private fun loadCredentials() {
 		prefs?.let { p ->
-			serverUrl = p.getString(KEY_SERVER_URL, "") ?: ""
+			serverUrl = (p.getString(KEY_SERVER_URL, "") ?: "")
+				.trim().replace(Regex("\\s+"), "")
 			username = p.getString(KEY_USERNAME, "") ?: ""
 			
 			// Decrypt sensitive data
@@ -138,7 +139,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 		}
 	}
 	
-	fun getUrl(): String = serverUrl
+	fun getUrl(): String = serverUrl.trim()
 	fun getUsername(): String = username
 	fun getPassword(): String = password
 	fun getUserId(): UUID? = currentUserId
@@ -166,13 +167,15 @@ class JellyfinClientManager(private val context: Context? = null) {
 	}
 	
 	fun updateCredentials(url: String, user: String, pass: String) {
-		val url = if (!url.startsWith("http://") && !url.startsWith("https://")) {
-			"http://$url"
+		// 从聊天/网页粘贴过来的地址常带换行、空格，必须先清掉
+		val cleaned = url.trim().replace(Regex("\\s+"), "")
+		val normalized = if (!cleaned.startsWith("http://") && !cleaned.startsWith("https://")) {
+			"http://$cleaned"
 		} else {
-			url
+			cleaned
 		}
 		
-		serverUrl = url.trimEnd('/')
+		serverUrl = normalized.trimEnd('/')
 		username = user
 		password = pass
 	}
@@ -888,6 +891,8 @@ class JellyfinClientManager(private val context: Context? = null) {
 		val token = accessToken ?: return@withContext false
 		
 		try {
+			val host = runCatching { java.net.URI(url).host }.getOrNull()
+			DiagLog.i("HTTP", "$trackId $quality start host=$host offset=$byteOffset expected=$expectedBytes")
 			val requestBuilder = Request.Builder().url(url).header("X-Emby-Token", token)
 			
 			if (byteLength != null) {
@@ -906,6 +911,11 @@ class JellyfinClientManager(private val context: Context? = null) {
 			}
 			
 			call.execute().use { response ->
+				DiagLog.i(
+					"HTTP",
+					"$trackId code=${response.code} length=${response.body?.contentLength()} " +
+						"type=${response.header("Content-Type")}"
+				)
 				if (!response.isSuccessful && response.code != 206) {
 					Log.e(
 						TAG,
@@ -950,6 +960,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 				
 				// Final progress update to ensure 	we report completion
 				onProgress?.invoke(byteOffset + totalDownloaded)
+				DiagLog.i("HTTP", "$trackId done bytes=$totalDownloaded expected=$expectedBytes")
 				
 				// 估算值只用于 ProxyFD 的长度参考，不能拿来做“成功/失败”判断：
 				// Jellyfin 的 AAC 输出会随内容浮动，偏小时会把正常下载误判成截断，
@@ -967,6 +978,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 			}
 			true
 		} catch (e: InvalidStatusException) {
+			DiagLog.i("HTTP", "$trackId InvalidStatus ${e.status}")
 			Log.w(TAG, "[$trackId] HTTP ${e.status} at offset $byteOffset")
 			if (e.status == 401) {
 				accessToken = null
@@ -975,6 +987,10 @@ class JellyfinClientManager(private val context: Context? = null) {
 		} catch (e: Exception) {
 			// log exception
 			if (e !is java.util.concurrent.CancellationException) {
+				DiagLog.i(
+					"HTTP",
+					"$trackId exception ${e.javaClass.simpleName}: ${e.message}"
+				)
 				Log.d(TAG, "[$trackId] Download interrupted: ${e.message}")
 			}
 			false
@@ -987,7 +1003,11 @@ class JellyfinClientManager(private val context: Context? = null) {
 	fun getStreamUrl(
 		trackId: UUID, quality: AudioQuality = AudioQuality.LOSSLESS
 	): String? {
-		val apiClient = getApiClient() ?: return null
+		val apiClient = getApiClient()
+		if (apiClient == null) {
+			DiagLog.i("URL", "$trackId quality=$quality api=null serverUrl='$serverUrl'")
+			return null
+		}
 		
 		if (quality == AudioQuality.LOSSLESS) {
 			// 原文件直出，SDK 的 URL 构造已经够用
@@ -999,9 +1019,17 @@ class JellyfinClientManager(private val context: Context? = null) {
 		}
 		
 		// 转码：显式构造，避免 SDK 默认参数覆盖码率
-		val bitrate = quality.bitrate ?: return null
+		val bitrate = quality.bitrate
+		if (bitrate == null) {
+			DiagLog.i("URL", "$trackId quality=$quality bitrate=null")
+			return null
+		}
+		if (serverUrl.isBlank()) {
+			DiagLog.i("URL", "$trackId quality=$quality serverUrl blank")
+			return null
+		}
 		return buildString {
-			append(serverUrl)
+			append(serverUrl.trim().trimEnd('/'))
 			append("/Audio/").append(trackId).append("/stream")
 			append("?static=false")
 			append("&audioCodec=").append(quality.codec ?: "aac")

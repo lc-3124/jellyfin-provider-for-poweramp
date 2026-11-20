@@ -432,6 +432,11 @@ class JellyfinMusicProvider : DocumentsProvider() {
 			is DocumentId.Type.Track -> {
 				val quality = jellyfinClient.getQuality()
 				val cached = playbackManager.getCachedTrackInfo(documentId.trackId)
+				DiagLog.i(
+					"OPEN",
+					"track=${documentId.trackId} quality=$quality " +
+						"cached=${cached?.quality} cachedSize=${cached?.file?.length()}"
+				)
 				
 				// 1) 缓存档位不低于请求，直接播缓存
 				if (cached != null && cached.quality.rank >= quality.rank) {

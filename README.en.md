@@ -1,6 +1,8 @@
-# Jellyfin Provider for Poweramp
+<p align="center"><img src="static/logo.png" width="120" alt="logo"/></p>
 
-**English** | [中文](README.md)
+<h1 align="center">Jellyfin Provider for Poweramp</h1>
+
+<p align="center"><b>English</b> | <a href="README.md">中文</a></p>
 
 > ### Unofficial fork — read this first
 >

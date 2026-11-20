@@ -1,17 +1,23 @@
-# Jellyfin Provider for Poweramp
+<p align="center"><img src="static/logo.png" width="120" alt="logo"/></p>
 
-[English](README.en.md) | **中文**
+<h1 align="center">Jellyfin Provider for Poweramp</h1>
+
+<p align="center">[English](README.en.md) | <b>中文</b></p>
 
 把 [Jellyfin](https://jellyfin.org) 音乐库通过 Android 的 **Storage Access Framework（SAF）**
 暴露成文件夹，让只认本地文件的播放器（主要针对 [Poweramp](https://powerampapp.com/)）也能浏览、
 播放、离线缓存你的服务器音乐。
 
-仓库提供两个入口：
+仓库提供三个入口：
 
 | 入口 | 用途 |
 | --- | --- |
-| **Jellyfin Music** | 在线库。按需流式播放，边下边缓存，可随意拖动进度。 |
+| **Jellyfin Music** | 按专辑浏览。在线流式播放，边下边缓存，可随意拖动进度。 |
+| **Jellyfin Folders** | 按服务器上的物理目录浏览（厂牌/专辑艺术家 → 专辑 → 曲目）。 |
 | **Jellyfin Cache** | 离线库。只列出已完整下载的曲目，断网也能播，标签、封面、歌词齐全。 |
+
+> 两个在线入口共用同一份数据库快照：曲目集合、标签、封面完全一致，只是分组方式不同。
+> 在 Poweramp 里同时添加两个根会出现两份同名歌曲，选其一即可。
 
 ## 声明
 

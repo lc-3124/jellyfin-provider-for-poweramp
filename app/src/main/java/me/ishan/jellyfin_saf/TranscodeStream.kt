@@ -71,15 +71,6 @@ class TranscodeStream(
 			)
 		}
 		
-		// 播放器常见的“读文件尾探测容器”行为：转码流是顺序的，等它下到末尾
-		// 就等于等整首。ADTS AAC 不需要尾部元数据，直接给 EOF 即可。
-		if (!finished && offset > downloaded && size <= TAIL_PROBE_SIZE &&
-			offset >= totalSize - TAIL_PROBE_WINDOW
-		) {
-			Log.d(TAG, "[$trackId] tail probe at $offset, answering EOF immediately")
-			return 0
-		}
-		
 		synchronized(lock) {
 			val deadline = System.currentTimeMillis() + READ_TIMEOUT_MS
 			while (!closed && !finished && downloaded < offset + size) {
@@ -137,8 +128,6 @@ class TranscodeStream(
 	
 	companion object {
 		private const val TAG = "TranscodeStream"
-		private const val READ_TIMEOUT_MS = 20_000L
-		private const val TAIL_PROBE_SIZE = 32 * 1024
-		private const val TAIL_PROBE_WINDOW = 64 * 1024L
+		private const val READ_TIMEOUT_MS = 60_000L
 	}
 }

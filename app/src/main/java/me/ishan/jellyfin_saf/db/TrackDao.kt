@@ -6,8 +6,10 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import androidx.room.Upsert
-import org.jellyfin.sdk.model.UUID
 import me.ishan.jellyfin_saf.ContentState
+import org.jellyfin.sdk.model.UUID
+
+data class TrackPath(val id: UUID, val path: String)
 
 @Dao
 interface TrackDao {
@@ -59,6 +61,15 @@ interface TrackDao {
 
     @Query("SELECT * FROM track_metadata")
     fun getAllTracks(): List<TrackEntity>
+
+    @Query("SELECT * FROM track_metadata WHERE album_id = :albumId")
+    fun getTracksByAlbum(albumId: UUID): List<TrackEntity>
+
+    @Query("SELECT id, path FROM track_metadata WHERE path IS NOT NULL AND path != ''")
+    fun getAllPaths(): List<TrackPath>
+
+    @Query("SELECT COUNT(*) FROM track_metadata WHERE path IS NOT NULL AND path != ''")
+    fun getPathCount(): Int
 
     @Query("DELETE FROM track_metadata WHERE id = :id")
     fun deleteTrackById(id: UUID)

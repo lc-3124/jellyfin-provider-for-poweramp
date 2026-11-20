@@ -32,5 +32,7 @@ data class TrackEntity(
     @ColumnInfo(name = "num_tracks") val numTracks: Int = 0,
     val year: Int? = null,
     val genres: String? = null,
-    @ColumnInfo(name = "last_fetched") val lastFetched: Long
+    @ColumnInfo(name = "last_fetched") val lastFetched: Long,
+    /** 服务器上的物理路径；目录树直接从这里建，不再单独请求服务器。 */
+    val path: String? = null
 )

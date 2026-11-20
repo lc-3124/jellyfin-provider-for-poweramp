@@ -518,10 +518,22 @@ class JellyfinClientManager(private val context: Context? = null) {
 	 * [persist] = false 时只返回实体、不写库，供批量扫描使用（避免一首先一个事务）。
 	 */
 	suspend fun getAlbumTracks(
-		albumId: UUID, persist: Boolean = true
+		albumId: UUID, persist: Boolean = true, forceRefresh: Boolean = false
 	): List<TrackEntity> = withContext(Dispatchers.IO) {
 		val apiClient = getApiClient() ?: return@withContext emptyList()
 		val userId = currentUserId ?: return@withContext emptyList()
+		
+		// 播放器浏览/扫描时先看本地：每张专辑一次网络请求在 2000+ 专辑时太慢，
+		// 而且刚扫描完的元数据本来就是新的。全量扫描用 forceRefresh 绕过。
+		if (!forceRefresh) {
+			val cached = db?.trackDao()?.getTracksByAlbum(albumId).orEmpty()
+			val now = System.currentTimeMillis()
+			if (cached.isNotEmpty() &&
+				cached.all { now - it.lastFetched < TRACKS_CACHE_TTL_MS }
+			) {
+				return@withContext cached
+			}
+		}
 		
 		try {
 			// 有些合集会超过 100 首（比如 216 首的 Listen 10），必须翻页
@@ -548,6 +560,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 			
 			if (persist && tracks.isNotEmpty()) {
 				db?.trackDao()?.insertTracks(tracks)
+				LocalLibrary.invalidate()
 			}
 			tracks
 		} catch (e: InvalidStatusException) {
@@ -593,6 +606,8 @@ class JellyfinClientManager(private val context: Context? = null) {
 		val dao = db?.trackDao()
 		val stats = runCatching { getLibraryStats() }.getOrDefault(0 to 0)
 		val dbCount = dao?.getTrackCount() ?: 0
+		// 0.9 之前没有 path 列，升级后要补一次全量，否则目录树没法从本地重建
+		val missingPaths = dbCount - (dao?.getPathCount() ?: 0)
 		val cursor = prefs?.getString(KEY_SYNC_CURSOR, null)?.let {
 			runCatching { LocalDateTime.parse(it) }.getOrNull()
 		}
@@ -603,7 +618,9 @@ class JellyfinClientManager(private val context: Context? = null) {
 		val consistent = dbCount > 0 && deficit in 0..ORPHAN_TOLERANCE
 		
 		// 旧版本升级上来：库里已经是完整的，但还没有游标，不必重扫一遍
-		if (mode != ScanMode.FULL && cursor == null && consistent) {
+		if (mode != ScanMode.FULL && cursor == null && consistent &&
+			missingPaths <= ORPHAN_TOLERANCE
+		) {
 			saveSyncCursor()
 			return@withContext LibrarySyncResult(
 				full = false, tracks = 0, albums = 0, removed = 0,
@@ -612,7 +629,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 		}
 		
 		val needFull = mode == ScanMode.FULL || cursor == null || dbCount == 0 ||
-			(mode == ScanMode.AUTO && !consistent)
+			(mode == ScanMode.AUTO && !consistent) || missingPaths > ORPHAN_TOLERANCE
 		if (needFull) {
 			fullScan(dao, shouldContinue, onProgress, startedAt)
 		} else {
@@ -643,7 +660,9 @@ class JellyfinClientManager(private val context: Context? = null) {
 						val index = next.getAndIncrement()
 						if (index >= albums.size) break
 						
-						val tracks = getAlbumTracks(albums[index].id, persist = false)
+						val tracks = getAlbumTracks(
+							albums[index].id, persist = false, forceRefresh = true
+						)
 						if (tracks.isNotEmpty()) {
 							dao?.insertTracks(tracks)
 							seen.addAll(tracks.map { it.id })
@@ -667,6 +686,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 			removed = stale.size
 		}
 		if (shouldContinue()) saveSyncCursor()
+		LocalLibrary.invalidate()
 		
 		Log.i(TAG, "Full scan: albums=${albums.size} tracks=${dao?.getTrackCount()} removed=$removed")
 		return LibrarySyncResult(
@@ -729,6 +749,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 			return fullScan(dao, shouldContinue, onProgress, startedAt)
 		}
 		if (shouldContinue()) saveSyncCursor()
+		LocalLibrary.invalidate()
 		
 		Log.i(TAG, "Incremental scan: changed=$changed")
 		return LibrarySyncResult(
@@ -780,7 +801,8 @@ class JellyfinClientManager(private val context: Context? = null) {
 			albumArtist = track.albumArtist ?: "",
 			dateCreated = track.dateCreated?.toString(),
 			isFavourite = track.userData?.isFavorite ?: false,
-			lastFetched = System.currentTimeMillis()
+			lastFetched = System.currentTimeMillis(),
+			path = path
 		)
 	}
 	
@@ -835,6 +857,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 			)
 			
 			db?.trackDao()?.insertTrack(entity)
+			LocalLibrary.invalidate()
 			
 			return@withContext entity
 		} catch (e: InvalidStatusException) {
@@ -928,17 +951,18 @@ class JellyfinClientManager(private val context: Context? = null) {
 				// Final progress update to ensure 	we report completion
 				onProgress?.invoke(byteOffset + totalDownloaded)
 				
-				// 服务器中途掐断转码时，read() 只会返回 -1；必须比对预期长度，
-				// 否则半首歌会被当成“下载完成”，播放到断点就静默跳歌。
-				if (expectedBytes != null && expectedBytes > 0L) {
-					val minimum = expectedBytes * 85 / 100
-					if (totalDownloaded < minimum) {
-						Log.e(
-							TAG,
-							"[$trackId] Short download: got $totalDownloaded of ~$expectedBytes bytes"
-						)
-						return@withContext false
-					}
+				// 估算值只用于 ProxyFD 的长度参考，不能拿来做“成功/失败”判断：
+				// Jellyfin 的 AAC 输出会随内容浮动，偏小时会把正常下载误判成截断，
+				// 于是播放到中途直接抛 IOException 跳歌。真正的中断开流会以
+				// IOException / 非 2xx 状态码体现，走下面的 catch。
+				if (expectedBytes != null && expectedBytes > 0L &&
+					totalDownloaded < expectedBytes * 50 / 100
+				) {
+					Log.w(
+						TAG,
+						"[$trackId] Transcode output much smaller than estimate: " +
+							"$totalDownloaded vs ~$expectedBytes"
+					)
 				}
 			}
 			true
@@ -1242,6 +1266,7 @@ class JellyfinClientManager(private val context: Context? = null) {
 		private const val KEY_MAX_CACHE_SIZE = "max_cache_size"
 		private const val KEY_QUALITY = "audio_quality"
 		private const val ALBUMS_CACHE_TTL_MS = 120_000L
+		private const val TRACKS_CACHE_TTL_MS = 6 * 60 * 60 * 1000L
 		
 		/** 并发抓专辑的 worker 数。这台服务器 ~3 请求/秒饱和，4 路刚好。 */
 		private const val SYNC_WORKERS = 4

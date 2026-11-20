@@ -73,15 +73,15 @@ object PowerampSync {
 		favourites.forEach { trackId ->
 			val row = byTrack[trackId] ?: return@forEach
 			val key = trackId.toString()
-			when {
-				row.rating > 0 -> pushed.add(key) // 已经喜欢，记下来即可
-				key !in pushed -> {
-					if (PowerampProvider.setRating(context, row.rowId, 5)) {
-						written++
-						pushed.add(key)
-					}
+			// 只要 Poweramp 里还是 0 就写 5：Poweramp 资料库重建/清空后
+			// 不能因为 pushed 里记过就永远跳过（旧版就是这么写的）
+			if (row.rating == 0) {
+				if (PowerampProvider.setRating(context, row.rowId, 5)) {
+					written++
+					pushed.add(key)
 				}
-				// rating == 0 且 key in pushed：用户手动取消过，不强行加回
+			} else {
+				pushed.add(key)
 			}
 		}
 		

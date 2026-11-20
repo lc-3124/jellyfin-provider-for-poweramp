@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Bundle
 import android.os.StrictMode
 import android.provider.DocumentsContract
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -90,6 +91,7 @@ class MainActivity : ComponentActivity() {
 		)
 		
 		super.onCreate(savedInstanceState)
+		
 		enableEdgeToEdge()
 		setContent {
 			val uiPrefs = remember { getSharedPreferences("ui", Context.MODE_PRIVATE) }
@@ -187,7 +189,7 @@ fun JellyfinSettings(
 				
 				// 扫描完成后重建目录树；收藏同步（拉取/推送）改为手动入口
 				val indexed = withContext(Dispatchers.IO) {
-					FolderLibrary.rebuild(context, manager)
+					FolderLibrary.rebuild(context)
 				}
 				val breakdown = withContext(Dispatchers.IO) {
 					playbackManager.getCacheSizeBreakdown()
@@ -300,7 +302,7 @@ fun JellyfinSettings(
 		scope.launch(Dispatchers.IO) {
 			// 目录树还没建过就补一次（不需要完整扫描）
 			if (manager.isAuthenticated() && FolderLibrary.get(context) == null) {
-				runCatching { FolderLibrary.rebuild(context, manager) }
+				runCatching { FolderLibrary.rebuild(context) }
 			}
 			val breakdown = playbackManager.getCacheSizeBreakdown()
 			val favourites = AppDatabase.getDatabase(context).trackDao().getFavouriteCount()

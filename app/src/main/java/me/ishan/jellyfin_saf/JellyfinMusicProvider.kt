@@ -302,14 +302,13 @@ class JellyfinMusicProvider : DocumentsProvider() {
 		try {
 			when (parentId) {
 				is DocumentId.Type.Root -> {
-					val albums = runBlocking { jellyfinClient.getAlbums(limit = 100000) }
-					
-					albums.forEach { album ->
+					// 与 Folders 根共用 Room 快照，不再在浏览时请求服务器
+					LocalLibrary.albums(context ?: return result).forEach { album ->
 						result.newRow().apply {
 							putIf(cols, Document.COLUMN_DOCUMENT_ID, DocumentId.forAlbum(album.id))
 							putIf(cols, Document.COLUMN_MIME_TYPE, Document.MIME_TYPE_DIR)
 							putIf(cols, Document.COLUMN_DISPLAY_NAME, album.name)
-							putIf(cols, Document.COLUMN_SUMMARY, "${album.songCount} Songs")
+							putIf(cols, Document.COLUMN_SUMMARY, "${album.tracks.size} Songs")
 							putIf(
 								cols, Document.COLUMN_FLAGS,
 								Document.FLAG_SUPPORTS_THUMBNAIL or Document.FLAG_SUPPORTS_METADATA
@@ -329,11 +328,8 @@ class JellyfinMusicProvider : DocumentsProvider() {
 				is DocumentId.Type.Folder -> addFolderChildren(result, cols, parentId.path)
 				
 				is DocumentId.Type.Album -> {
-					val tracks = runBlocking {
-						jellyfinClient.getAlbumTracks(parentId.albumId)
-					}
-					
-					tracks.forEach { track ->
+					val album = LocalLibrary.album(context ?: return result, parentId.albumId)
+					album?.tracks?.forEach { track ->
 						val docId = DocumentId.forTrack(
 							parentId.albumId, track.id, track.size ?: 0L, track.duration ?: 0L
 						)

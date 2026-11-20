@@ -2,6 +2,7 @@ package me.ishan.jellyfin_saf
 
 import android.content.Context
 import android.util.Log
+import me.ishan.jellyfin_saf.db.AppDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jellyfin.sdk.model.UUID
@@ -43,13 +44,18 @@ object FolderLibrary {
 		cached = null
 	}
 	
-	/** 重新抓路径/元数据并建树，返回曲目数。 */
-	suspend fun rebuild(context: Context, client: JellyfinClientManager): Int =
-		withContext(Dispatchers.IO) {
-			val paths = client.getAllTrackPaths()
-			if (paths.isEmpty()) return@withContext 0
+	/** 用 Room 里的同一份快照建树（不打网络），返回曲目数。 */
+	suspend fun rebuild(context: Context): Int = withContext(Dispatchers.IO) {
+			val dao = AppDatabase.getDatabase(context).trackDao()
+			val paths = dao.getAllPaths().map { it.id to it.path }
+			val total = dao.getTrackCount()
+			// 路径还没补齐（旧版本升级）时先不覆盖旧树，等补完再建
+			if (paths.isEmpty() || paths.size < total * 0.9) {
+				Log.w(TAG, "Skip folder tree: ${paths.size}/$total tracks have a path")
+				return@withContext 0
+			}
 			
-			val metadata = client.getAllTrackInfo().associateBy { it.id }
+			val metadata = dao.getAllTracks().associateBy { it.id }
 			val artists = LinkedHashMap<String, MutableArtist>()
 			
 			// 先剥掉所有路径的公共目录前缀（服务器上的挂载点），否则第一段永远是 "home"

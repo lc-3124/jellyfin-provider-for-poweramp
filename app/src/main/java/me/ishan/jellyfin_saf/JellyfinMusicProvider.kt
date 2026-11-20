@@ -258,7 +258,8 @@ class JellyfinMusicProvider : DocumentsProvider() {
 						result, cols, docId, metadata,
 						size = reportedSize ?: metadata.size ?: documentId.sizeBytes,
 						lastModified = metadata.lastFetched,
-						lyrics = lyrics
+						lyrics = lyrics,
+						mime = playbackMime(metadata)
 					)
 				} catch (e: Exception) {
 					Log.e(TAG, "Error querying track", e)
@@ -277,7 +278,8 @@ class JellyfinMusicProvider : DocumentsProvider() {
 					result, cols, docId, metadata,
 					size = state.sizeBytes,
 					lastModified = metadata.lastFetched,
-					lyrics = playbackManager.getCachedLyrics(documentId.trackId)
+					lyrics = playbackManager.getCachedLyrics(documentId.trackId),
+					mime = cachedMime(metadata)
 				)
 			}
 			
@@ -335,7 +337,8 @@ class JellyfinMusicProvider : DocumentsProvider() {
 						)
 						addTrackRow(
 							result, cols, docId, track,
-							size = track.size, lastModified = track.lastFetched, lyrics = null
+							size = track.size, lastModified = track.lastFetched, lyrics = null,
+							mime = playbackMime(track)
 						)
 					}
 				}
@@ -397,7 +400,8 @@ class JellyfinMusicProvider : DocumentsProvider() {
 								result, cols, docId, metadata,
 								size = state.sizeBytes,
 								lastModified = metadata.lastFetched,
-								lyrics = playbackManager.getCachedLyrics(metadata.id)
+								lyrics = playbackManager.getCachedLyrics(metadata.id),
+								mime = cachedMime(metadata)
 							)
 						}
 				}
@@ -671,7 +675,8 @@ class JellyfinMusicProvider : DocumentsProvider() {
 				size = metadata.size,
 				lastModified = metadata.lastFetched,
 				lyrics = null,
-				displayName = ref.title
+				displayName = ref.title,
+				mime = playbackMime(metadata)
 			)
 		}
 	}
@@ -696,6 +701,28 @@ class JellyfinMusicProvider : DocumentsProvider() {
 		}
 	}
 	
+	/**
+	 * 播放器会按 MIME 选解码器：转码档实际输出是 AAC（ADTS），
+	 * 但数据库里存的是原始文件的 MIME（flac/mp3）。不修正的话，
+	 * 部分播放器（例如某些 Poweramp 构建）会拿 FLAC 解码器去解 AAC，直接失败。
+	 */
+	private fun playbackMime(track: TrackEntity): String {
+		if (jellyfinClient.getQuality() == AudioQuality.LOSSLESS) {
+			return track.mimeType ?: "audio/*"
+		}
+		return "audio/aac"
+	}
+	
+	/** 已缓存文件按真实后缀判断，避免报告错的类型。 */
+	private fun cachedMime(track: TrackEntity): String {
+		val file = playbackManager.getCachedTrack(track.id)
+		return when {
+			file == null -> track.mimeType ?: "audio/*"
+			file.name.contains(".aac") -> "audio/aac"
+			else -> track.mimeType ?: "audio/*"
+		}
+	}
+	
 	private fun addTrackRow(
 		cursor: MatrixCursor,
 		cols: Set<String>,
@@ -704,11 +731,12 @@ class JellyfinMusicProvider : DocumentsProvider() {
 		size: Long?,
 		lastModified: Long?,
 		lyrics: TrackLyricsEntity?,
-		displayName: String? = null
+		displayName: String? = null,
+		mime: String? = null
 	) {
 		cursor.newRow().apply {
 			putIf(cols, Document.COLUMN_DOCUMENT_ID, docId)
-			putIf(cols, Document.COLUMN_MIME_TYPE, track.mimeType ?: "audio/*")
+			putIf(cols, Document.COLUMN_MIME_TYPE, mime ?: track.mimeType ?: "audio/*")
 			putIf(cols, Document.COLUMN_DISPLAY_NAME, displayName ?: track.title)
 			putIf(cols, Document.COLUMN_SIZE, size)
 			putIf(cols, Document.COLUMN_LAST_MODIFIED, lastModified)

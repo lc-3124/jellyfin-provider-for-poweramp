@@ -44,9 +44,24 @@
   </tr>
 </table>
 
+## 配色方案
+
+四套固定配色，在 ⓘ 弹窗里用拼色图标切换，切换后立即生效并保存：
+
+<table>
+  <tr>
+    <td align="center"><img src="static/style-dark_blue.png" width="200"/><br/>暗色 · 蓝 / 紫 / 红</td>
+    <td align="center"><img src="static/style-dark_green.png" width="200"/><br/>暗色 · 绿 / 黄 / 橙</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="static/style-light_blue.png" width="200"/><br/>亮色 · 蓝 / 紫 / 红</td>
+    <td align="center"><img src="static/style-light_green.png" width="200"/><br/>亮色 · 绿 / 黄 / 橙</td>
+  </tr>
+</table>
+
 ## 功能
 
-- **两种 SAF 根目录**：在线库支持边下边播；离线库只暴露已下完整、纯本地读取的曲目。
+- **三个 SAF 根目录**：在线库支持边下边播；文件夹视图按物理路径组织；离线库只暴露已下完整的曲目。
 - **三档音质**：无损 / 中等（AAC 128k）/ 低（AAC 64k）。可以在线转码播放，也可以只用于离线下载。
 - **收藏双向同步**（依赖 Poweramp 的 content provider）：“同步点赞”点开弹窗，分两个方向：
   - **拉取**：把 Jellyfin 的收藏**增量**写入 Poweramp（只增不减、不下载）；
@@ -91,8 +106,8 @@ Poweramp ── SAF (content://) ──> JellyfinMusicProvider (DocumentsProvide
 
 1. 从本仓库的 [Releases](https://github.com/lc-3124/jellyfin-saf-provider/releases) 下载 APK 安装；
 2. 打开应用，填写服务器地址、用户名、密码，登录后会自动扫描资料库；
-3. 在 Poweramp 中：*设置 → 资料库 → 文件夹/资料库 → 添加文件夹*，勾选 **Jellyfin Music**
-   或 **Jellyfin Cache**；
+3. 在 Poweramp 中：*设置 → 资料库 → 文件夹/资料库 → 添加文件夹*，勾选 **Jellyfin Music**、
+   **Jellyfin Folders** 或 **Jellyfin Cache** 中的一个；
 4. 播放歌曲即可，边听边缓存；已完整的曲目会出现在离线库中。
 
 ## 音质分级
@@ -114,7 +129,7 @@ Poweramp ── SAF (content://) ──> JellyfinMusicProvider (DocumentsProvide
 **拉取（Jellyfin → Poweramp）**
 
 - 拉取远端全部收藏，逐首把 Poweramp 里 `rating == 0` 的写成 5；
-- 增量：已在 `poweramp_pushed.json` 中记录过、之后被你在 Poweramp 里取消的曲目不会强行加回；
+- 只要还是 0 就会写，Poweramp 资料库重建或清空后也能恢复；
 - 只增不减、不下载、不覆盖已有的 1–5 评分。
 
 **推送（Poweramp → Jellyfin，执行前确认）**

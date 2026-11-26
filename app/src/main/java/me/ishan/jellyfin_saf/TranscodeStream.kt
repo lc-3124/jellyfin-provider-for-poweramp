@@ -42,6 +42,7 @@ class TranscodeStream(
 	private var failed: Boolean = false
 	
 	private val readCount = java.util.concurrent.atomic.AtomicInteger(0)
+	private val firstReadLogged = java.util.concurrent.atomic.AtomicBoolean(false)
 	private val openedAt = System.currentTimeMillis()
 	
 	fun onProgress(position: Long) {
@@ -72,9 +73,12 @@ class TranscodeStream(
 			)
 		}
 		
+		// 首播要快：只等第一小段（32 KiB）落盘就返回，允许短读，
+		// 不要为了填满整个请求而等到整块下载完。
+		val want = min(size.toLong(), FIRST_BYTES).toInt()
 		synchronized(lock) {
 			val deadline = System.currentTimeMillis() + READ_TIMEOUT_MS
-			while (!closed && !finished && downloaded < offset + size) {
+			while (!closed && !finished && downloaded < offset + want) {
 				val remaining = deadline - System.currentTimeMillis()
 				if (remaining <= 0) break
 				try {
@@ -83,6 +87,13 @@ class TranscodeStream(
 					break
 				}
 			}
+		}
+		if (firstReadLogged.compareAndSet(false, true)) {
+			DiagLog.i(
+				"TRANSCODE",
+				"[$trackId] first read offset=$offset size=$size want=$want " +
+					"downloaded=$downloaded waited=${System.currentTimeMillis() - openedAt}ms"
+			)
 		}
 		
 		if (closed) return 0
@@ -131,5 +142,6 @@ class TranscodeStream(
 	companion object {
 		private const val TAG = "TranscodeStream"
 		private const val READ_TIMEOUT_MS = 60_000L
+		private const val FIRST_BYTES = 32 * 1024L
 	}
 }

@@ -260,26 +260,15 @@ fun JellyfinSettings(
 					context, t.syncFailed(result.error ?: ""), Toast.LENGTH_LONG
 				).show()
 			} else {
-				syncProgress = t.syncedDownloading(result.added + result.removed)
-				val dl = playbackManager.downloadFavouriteTracks(
-					manager, manager.getQuality()
-				) { done, total, title ->
-					withContext(Dispatchers.Main) {
-						syncProgress = t.downloadingProgress(done, total, title)
-					}
-				}
-				val breakdown = withContext(Dispatchers.IO) {
-					playbackManager.getCacheSizeBreakdown()
-				}
+				// 只改名单，不触发任何下载；缓存由用户自己决定何时补
 				val favourites = withContext(Dispatchers.IO) {
 					AppDatabase.getDatabase(context).trackDao().getFavouriteCount()
 				}
-				cacheBreakdown = breakdown
 				favouriteCount = favourites
 				isSyncing = false
 				Toast.makeText(
 					context,
-					t.mirrorSummary(result.added, result.removed, dl.downloaded, dl.failed),
+					t.pushDone(result.added, result.removed),
 					Toast.LENGTH_LONG
 				).show()
 			}

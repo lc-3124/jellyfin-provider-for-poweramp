@@ -72,7 +72,7 @@ and is remembered:
   - **Pull** writes Jellyfin favourites into Poweramp as `rating = 5`; it only adds, never downloads,
     and rewrites anything Poweramp shows as 0 (so a rebuilt Poweramp library is restored);
   - **Push** previews the change set first (“add X / remove Y”) and only touches Jellyfin after you
-    confirm, then downloads the favourites.
+    confirm; it changes the favourites list only and never downloads audio.
   - Scanning the library no longer syncs favourites automatically.
 - **Full metadata** — title, artist, album artist, year, track/disc number, genre, favourite flag,
   lyrics (including LRC timings) and artwork are all served through the SAF cursor, also offline.
@@ -156,7 +156,8 @@ Poweramp ── SAF (content://) ──> JellyfinMusicProvider (DocumentsProvide
   two sides already match;
 - After confirmation, every track rated 1–5 in Poweramp becomes a Jellyfin favourite;
 - Jellyfin favourites that Poweramp knows but did not like are un-favourited;
-- Favourites are then downloaded at the current quality.
+- Only the favourites list changes; no audio is downloaded. Caching is left to playback or the
+  “complete downloads” action.
 
 > Writing to Poweramp uses its **undocumented** content provider
 > (`com.maxmpz.audioplayer.data/files`), verified on build 1035. Future versions may change; the app

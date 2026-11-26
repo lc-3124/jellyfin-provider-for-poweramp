@@ -109,6 +109,7 @@ data class UiStrings(
 	val syncedDownloading: (Int) -> String,
 	val pushedToPoweramp: (Int) -> String,
 	val mirrorSummary: (Int, Int, Int, Int) -> String,
+	val pushDone: (Int, Int) -> String,
 	val downloadingProgress: (Int, Int, String) -> String,
 	val foldersIndexed: (Int) -> String
 )
@@ -219,6 +220,7 @@ private val EN = UiStrings(
 	syncedDownloading = { n -> "Synced $n likes, downloading favourites..." },
 	pushedToPoweramp = { n -> "Added $n likes to Poweramp" },
 	mirrorSummary = { a, r, d, f -> "Jellyfin: +$a / -$r · downloaded $d, failed $f" },
+	pushDone = { a, r -> "Jellyfin favourites: +$a / -$r" },
 	downloadingProgress = { d, total, title -> "Downloading $d/$total" + if (title.isBlank()) "" else ": $title" },
 	foldersIndexed = { n -> "Indexed $n tracks into the folder tree" }
 )
@@ -329,6 +331,7 @@ private val ZH = EN.copy(
 	syncedDownloading = { n -> "已同步 $n 个点赞，正在下载收藏…" },
 	pushedToPoweramp = { n -> "已向 Poweramp 添加 $n 个喜欢" },
 	mirrorSummary = { a, r, d, f -> "Jellyfin：新增 $a / 取消 $r · 下载 $d 首，失败 $f 首" },
+	pushDone = { a, r -> "Jellyfin 收藏：新增 $a / 取消 $r" },
 	downloadingProgress = { d, total, title -> "正在下载 $d/$total" + if (title.isBlank()) "" else "：$title" },
 	foldersIndexed = { n -> "已索引 $n 首曲目到目录树" }
 )
@@ -439,6 +442,7 @@ private val JA = EN.copy(
 	syncedDownloading = { n -> "$n 件のいいねを同期しました。お気に入りをダウンロード中…" },
 	pushedToPoweramp = { n -> "Poweramp に $n 件のいいねを追加しました" },
 	mirrorSummary = { a, r, d, f -> "Jellyfin：追加 $a / 解除 $r · ダウンロード $d 件、失敗 $f 件" },
+	pushDone = { a, r -> "Jellyfin のお気に入り：追加 $a / 解除 $r" },
 	downloadingProgress = { d, total, title -> "$d/$total をダウンロード中" + if (title.isBlank()) "" else "：$title" },
 	foldersIndexed = { n -> "$n 曲をフォルダツリーに登録しました" }
 )

@@ -78,7 +78,7 @@ Poweramp ── SAF ──> JellyfinMusicProvider (DocumentsProvider)
 - 入口“同步点赞”弹窗，两个方向都手动：
   - **拉取**：Jellyfin 收藏 → Poweramp `rating=5`；**只要 rating 是 0 就写**，
     这样 Poweramp 资料库重建/清空后还能恢复；
-  - **推送**：先算差异弹确认框（新增 X / 取消 Y），确认后才镜像到 Jellyfin，并下载收藏曲目。
+  - **推送**：先算差异弹确认框（新增 X / 取消 Y），确认后才镜像到 Jellyfin；只改名单，不下载。
 - 扫描资料库不再自动同步收藏。
 - 写入 Poweramp 用它**未公开**的 content provider，每次写完校验，失败就请求授权并停止。
 

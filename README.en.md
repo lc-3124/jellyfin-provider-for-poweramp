@@ -117,7 +117,7 @@ Poweramp ── SAF (content://) ──> JellyfinMusicProvider (DocumentsProvide
 ## Install and use
 
 1. Download the APK from [Releases](https://github.com/lc-3124/jellyfin-saf-provider/releases) and
-   install it.
+   install it — one universal build for `armeabi-v7a`, `arm64-v8a`, `x86` and `x86_64`.
 2. Open the app, enter the server URL, username and password. After login the library is scanned
    automatically.
 3. In Poweramp: *Settings → Libraries → Folders/Libraries → Add folder* and tick **Jellyfin Music**,

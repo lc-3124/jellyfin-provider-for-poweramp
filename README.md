@@ -103,7 +103,8 @@ Poweramp ── SAF (content://) ──> JellyfinMusicProvider (DocumentsProvide
 
 ## 安装与使用
 
-1. 从本仓库的 [Releases](https://github.com/lc-3124/jellyfin-saf-provider/releases) 下载 APK 安装；
+1. 从本仓库的 [Releases](https://github.com/lc-3124/jellyfin-saf-provider/releases) 下载 APK 安装
+   （通用包，含 `armeabi-v7a` / `arm64-v8a` / `x86` / `x86_64`）；
 2. 打开应用，填写服务器地址、用户名、密码，登录后会自动扫描资料库；
 3. 在 Poweramp 中：*设置 → 资料库 → 文件夹/资料库 → 添加文件夹*，勾选 **Jellyfin Music**、
    **Jellyfin Folders** 或 **Jellyfin Cache** 中的一个；

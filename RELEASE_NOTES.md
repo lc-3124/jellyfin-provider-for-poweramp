@@ -1,4 +1,4 @@
-# v1.0.0 — Jellyfin Provider for Poweramp
+# v1.0.4 — Jellyfin Provider for Poweramp
 
 > **Unofficial fork / 非官方 fork**
 >
@@ -12,42 +12,30 @@
 > 许可证文件，本 fork 不主张任何额外权利，仅供技术学习与个人测试使用。
 > 仅在 GitHub 本仓库发布，不上架应用商店、不镜像、不售卖，也不用于商业用途。
 
-## What's new in 1.0.0
+## Highlights
 
-**One data source, two views**
+**Universal APK** — this build ships `armeabi-v7a`, `arm64-v8a`, `x86` and `x86_64`, so it runs on
+32-bit ARM phones, modern ARM64 phones and emulators alike.
 
-- `Jellyfin Music` and `Jellyfin Folders` now render from the same Room snapshot; browsing no
-  longer hits the server, and both roots always expose exactly the same tracks.
-- Physical paths are stored in the database (Room v3 with a migration); the folder tree is rebuilt
-  locally instead of paginating the server.
+**One data source, two views** — `Jellyfin Music` and `Jellyfin Folders` render from the same Room
+snapshot; browsing no longer hits the server and both roots always expose the same tracks.
 
-**Scanning**
+**Scanning** — full scan uses four concurrent album fetches, batch upserts, album pagination and
+stale-track cleanup; incremental scan uses `MinDateLastSaved` and usually finishes in under a second.
 
-- Full scan: 4 concurrent album fetches, batch upserts, album pagination (albums with 100+ tracks),
-  and stale-track cleanup — about 1.5 minutes for 2k albums / 18.7k tracks.
-- Incremental scan: `MinDateLastSaved` cursor, usually under a second.
-- Scan is now a dialog with explicit **Full** / **Incremental** entries; library updates no longer
-  pull favourites automatically.
+**Favourites** — “Sync Likes” opens a dialog with **Pull** and **Push**. Pull restores `rating = 5`
+whenever Poweramp shows 0. Push previews the change count before touching Jellyfin. **Neither
+direction downloads audio any more** — caching is left to playback or the “complete downloads”
+action.
 
-**Favourites**
+**Playback** — transcoded documents advertise `audio/aac`; transcoded playback starts after the
+first 32 KiB is buffered instead of waiting for a full read.
 
-- “Sync Likes” opens a dialog with **Push** and **Pull**.
-- Pull writes `rating = 5` whenever Poweramp shows 0, so a rebuilt Poweramp library is restored.
-- Push shows a confirmation with the number of additions/removals before touching Jellyfin.
+**Diagnostics** — a persistent `diag.log` records the playback chain (HTTP status, exceptions,
+bytes), exportable from the ⓘ dialog as `Download/JellyfinProvider-diag-*.txt`.
 
-**Playback**
-
-- Transcode streaming no longer guesses EOF from the estimated length, no longer marks a slightly
-  smaller transcode as failed, and waits longer before giving up — this removes most first-play
-  skips on non-lossless quality.
-
-**Interface**
-
-- New logo and adaptive launcher icon.
-- Four colour styles (dark/light × blue-purple-red and green-yellow-orange), chosen with colour
-  swatches in the ⓘ dialog.
-- Connected card is a gradient with logout and a speed test (latency toast); cache stats card is
-  tappable to refresh and shows favourites plus partially cached tracks.
+**Fixes since 1.0.0** — server URLs containing whitespace (for example a trailing newline from a
+pasted link) are sanitized, which fixes “lossless works but medium/low fails instantly”.
 
 ## Signing & verification
 
